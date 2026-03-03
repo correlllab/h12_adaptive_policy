@@ -23,9 +23,11 @@ from mpl_toolkits.mplot3d import Axes3D
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if _SCRIPT_DIR not in sys.path:
     sys.path.insert(0, _SCRIPT_DIR)
-_REPO_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, ".."))
+_REPO_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, "../.."))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
+
+from h12_adaptive_policy.RMA.rma_modules.env_factor_encoder import EnvFactorEncoder, EnvFactorEncoderCfg
 
 import mujoco
 import torch
@@ -174,10 +176,9 @@ def main():
     config_path = args.config if os.path.isabs(args.config) else os.path.join(_SCRIPT_DIR, args.config)
     config = load_config(config_path)
 
-    config_dir = os.path.dirname(os.path.abspath(config_path))
     for key in ["policy_path", "xml_path", "encoder_path"]:
         if key in config and config[key] and not os.path.isabs(config[key]):
-            config[key] = os.path.normpath(os.path.join(config_dir, config[key]))
+            config[key] = os.path.normpath(os.path.join(_REPO_ROOT, config[key]))
 
     # Optional arm pose override from YAML presets
     if args.arm_pose is not None:
@@ -198,7 +199,7 @@ def main():
             config["encoder_path"] = preferred[0] if preferred else encoder_files[-1]
             print(f"Using encoder: {config['encoder_path']}")
 
-    m = mujoco.MjModel.from_xml_path(config["xml_path"])
+    m = mujoco.MjModel.from_xml_path(config['xml_path'])
     m.opt.timestep = config["simulation_dt"]
     n_joints = m.nq - 7
 
@@ -209,7 +210,6 @@ def main():
     policy = torch.jit.load(config["policy_path"])
     encoder = None
     if config.get("encoder_path") and os.path.isfile(config["encoder_path"]):
-        from RMA.rma_modules.env_factor_encoder import EnvFactorEncoder, EnvFactorEncoderCfg
         encoder = EnvFactorEncoder(EnvFactorEncoderCfg())
         encoder.load_state_dict(torch.load(config["encoder_path"], map_location="cpu", weights_only=True))
         encoder.eval()
@@ -272,9 +272,9 @@ def main():
     if csv_path is None:
         arm_pose_tag = args.arm_pose if args.arm_pose is not None else "defaultpose"
         default_csv_name = f"hand_sweep_6d_{mode_tag}_{arm_pose_tag}.csv"
-        csv_path = os.path.join(_SCRIPT_DIR, default_csv_name)
+        csv_path = os.path.join(_REPO_ROOT, 'data/oracle/hand_6d_sweep', default_csv_name)
     elif not os.path.isabs(csv_path):
-        csv_path = os.path.join(_SCRIPT_DIR, csv_path)
+        csv_path = os.path.join(_REPO_ROOT, 'data/oracle/hand_6d_sweep', csv_path)
     os.makedirs(os.path.dirname(csv_path) or ".", exist_ok=True)
     with open(csv_path, "w") as f:
         f.write("Fx_L,Fy_L,Fz_L,Fx_R,Fy_R,Fz_R,height_cmd,success,time_to_fall\n")
@@ -298,7 +298,8 @@ def main():
         out_basename = f"hand_sweep_6d_{mode_tag}_{arm_pose_tag}.png"
     else:
         out_basename = args.out
-    out_path1 = out_basename if os.path.isabs(out_basename) else os.path.join(_SCRIPT_DIR, out_basename)
+    out_path1 = out_basename if os.path.isabs(out_basename) else \
+        os.path.join(_REPO_ROOT, 'figure/oracle/hand_6d_sweep', out_basename)
 
     # ---- Figure 2: two 3D scatter plots (left hand forces, right hand forces), colored by success
     fig2 = plt.figure(figsize=(12, 5))

@@ -22,9 +22,15 @@ Humanoid policy adaptive to end-effector payloads.
 
 ## Files
 
-- `data/` contains saved data such as joint positions.
+- `data/` contains saved data such as model checkpoint and evaluation results.
 - `figures` contains generated figures.
 - `h12_adaptive_policy/`: contains source code.
-    - `plot/` contains scripts to plot figures.
+    - `deploy/` contains scripts to deploy the policy and run experiments.
     - `example/` contains example scripts.
+    - `plot/` contains scripts to plot figures.
+    - `RMA/` contains implementation of the RMA modules.
 - `submodules/`: contains external dependencies.
+
+## Usage
+
+- Run scripts from the root directory `python h12_adaptive_policy/deploy/eval_rma_hand_sweep_6d.py`.
