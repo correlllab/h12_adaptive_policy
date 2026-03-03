@@ -1,0 +1,33 @@
+name: adaptive_env
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  # common libs
+  - tqdm
+  - numpy
+  - scipy
+  - pynput
+  - pandas
+  - openssl
+  - matplotlib
+  # torch
+  - pytorch
+  - torchaudio
+  - torchvision
+  # graphic libs
+  - meshio
+  - open3d
+  - pyvista
+  - pyquaternion
+  # sims
+  - mujoco
+  - pygame
+  - qpsolvers
+  - pinocchio
+  - robot_descriptions
+  # pip
+  - pip
+  - pip:
+    - meshcat
+    - pin-pink
