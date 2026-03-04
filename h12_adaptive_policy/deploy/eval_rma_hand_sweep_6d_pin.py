@@ -15,6 +15,7 @@ import os
 import argparse
 import glob
 import numpy as np
+import pinocchio as pin
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
@@ -44,6 +45,20 @@ from mujoco_deploy_h12_rma import (
 HEIGHT_THRESHOLD = 0.55
 TILT_DEG_THRESHOLD = 45.0
 
+# def compare_jointactuatorfrc_to_qfrc(m, d, sensor_joint_names):
+#     diffs = []
+#     for jname in sensor_joint_names:
+#         jid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, jname)
+#         dof = m.jnt_dofadr[jid]              # DOF index in nv-space
+#         # Sensor naming: remove trailing "_joint", then append "_torque"
+#         sname = f"{jname[:-6]}_torque" if jname.endswith("_joint") else f"{jname}_torque"
+#         sid  = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_SENSOR, sname)
+#         adr  = m.sensor_adr[sid]
+#         sval = d.sensordata[adr]             # dim=1 for jointactuatorfrc
+
+#         qval = d.qfrc_actuator[dof]
+#         diffs.append((jname, jid, dof, sid, sval, qval, sval - qval))
+#     return diffs
 
 def get_tilt_deg(quat):
     gravity_body = get_gravity_orientation(quat)
@@ -79,6 +94,7 @@ def run_one_vec(config, m, robot_model, left_vec_3d, right_vec_3d, duration_s, p
     n_steps = int(duration_s / dt)
     success = True
     time_to_fall_s = None
+    # debug_print_count = 0
 
     for step in range(n_steps):
         d.xfrc_applied[:] = 0
@@ -118,9 +134,8 @@ def run_one_vec(config, m, robot_model, left_vec_3d, right_vec_3d, duration_s, p
 
         mujoco.mj_step(m, d)
 
-        # robot_model._q = d.qpos[7:]
-        # imu_quat = d.qpos[3:7]
-        # import pinocchio as pin
+        # robot_model._q = d.sensordata[:n_joints].copy()  # use sensor data for better accuracy
+        # imu_quat = d.sensordata[n_joints*3:n_joints*3+4].copy()  # use sensor data for better accuracy
         # pin.forwardKinematics(robot_model.model, robot_model.data, robot_model.full_q(robot_model._q, imu_quat))
         # pin.updateFramePlacements(robot_model.model, robot_model.data)
         # robot_model.update_visualizer()
@@ -129,20 +144,28 @@ def run_one_vec(config, m, robot_model, left_vec_3d, right_vec_3d, duration_s, p
             single_obs, _ = compute_observation(d, config, action, cmd, height_cmd, n_joints)
             obs_history.append(single_obs)
 
-            # Estimate forces via Pinocchio get_frame_wrench
-            q = d.qpos[7:]  # joint positions (27,)
-            tau = d.qfrc_constraint[6:]  # actual joint torques from MuJoCo (27,)
-            imu_quat = d.qpos[3:7]  # base quaternion [qw, qx, qy, qz]
+            # # Compare torque retrieval methods (debug disabled)
+            # if debug_print_count < 5:
+            #     sensor_joint_names = [mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_JOINT, m.actuator_trnid[i, 0]) for i in range(m.nu)]
+            #     diffs = compare_jointactuatorfrc_to_qfrc(m, d, sensor_joint_names)
+            #     print(f"\n--- Step {step} ---")
+            #     for jname, jid, dof, sid, sval, qval, diff in diffs:
+            #         print(f"  {jname:30s} | jid={jid:2d} dof={dof:2d} sid={sid:2d} | sensor={sval:8.2f} | qfrc={qval:8.2f} | diff={diff:8.2f}")
+            #     debug_print_count += 1
 
-            # robot_model._q = q
-            # pin.forwardKinematics(robot_model.model, robot_model.data, robot_model.full_q(robot_model._q, imu_quat))
-            # pin.updateFramePlacements(robot_model.model, robot_model.data)
+            # Estimate forces via Pinocchio get_frame_wrench
+            q = d.sensordata[:n_joints].copy()  # use sensordata for better accuracy (27,)
+            # tau = d.qfrc_actuator[6:].copy()  # use qfrc_actuator (27,)
+            tau = d.sensordata[n_joints*2:n_joints*3].copy()  # use sensordata for better accuracy (27,)
+            imu_quat = d.sensordata[n_joints*3:n_joints*3+4].copy()  # use sensordata for better accuracy
 
             left_wrench = robot_model.get_frame_wrench('left_wrist_roll_link', q, tau, imu_quat)
             right_wrench = robot_model.get_frame_wrench('right_wrist_roll_link', q, tau, imu_quat)
             left_force_estimated = left_wrench[:3].copy()
             right_force_estimated = right_wrench[:3].copy()
             # print(f'Left Force difference {np.linalg.norm(left_force_estimated - left_force_3d):.2f} N, Right Force difference {np.linalg.norm(right_force_estimated - right_force_3d):.2f} N')
+            # print(f'Left Force: {left_force_3d}')
+            # print(f'Left Force Estimated: {left_force_estimated}')
 
             # # ! use oracle values instead of estimation
             # left_force_estimated = left_force_3d
@@ -231,6 +254,7 @@ def main():
     urdf_path = os.path.join(_REPO_ROOT,
                              'submodules/h12_ros2_controller/assets/h1_2/h1_2_handless.urdf')
     robot_model = RobotModel(urdf_path)
+    # robot_model.init_visualizer()
     print(f"Initialized RobotModel from {urdf_path}")
 
     m = mujoco.MjModel.from_xml_path(config['xml_path'])
