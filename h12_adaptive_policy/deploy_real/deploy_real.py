@@ -352,10 +352,14 @@ class Controller:
             upper_pos = self.qj[num_actions : num_actions + 15].copy()
 
             # get hand forces from robot model
-            self.robot_model.update_kinematics()
-            left_force = -self.robot_model.get_frame_wrench("left_wrist_yaw_link")[0:3]
-            right_force = -self.robot_model.get_frame_wrench("right_wrist_yaw_link")[0:3]
-            print(f"Left hand force: {left_force}, Right hand force: {right_force}")
+            # self.robot_model.update_kinematics()
+            # left_force = -self.robot_model.get_frame_wrench("left_wrist_yaw_link")[0:3]
+            # right_force = -self.robot_model.get_frame_wrench("right_wrist_yaw_link")[0:3]
+            # print(f"Left hand force: {left_force}, Right hand force: {right_force}")
+            left_force = np.array([17.48624269, 7.02638068, -59.19414214])
+            right_force = np.array([-9.99245771, -4.1227193, -2.88810539])
+            # left_force = np.array([-115.08508926, -30.89641282, 532.00016259])
+            # right_force = np.array([74.82097678, 34.1630265, -37.48545911])
 
             # # hardcode hand forces
             # left_force = self.config.left_hand_force.astype(np.float32)
