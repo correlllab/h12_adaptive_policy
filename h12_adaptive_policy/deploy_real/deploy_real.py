@@ -346,14 +346,17 @@ class Controller:
 
             # get hand forces from robot model
             self.robot_model.update_kinematics()
-            left_force = self.robot_model.get_frame_wrench("left_wrist_yaw_link")[0:3]
-            right_force = self.robot_model.get_frame_wrench("right_wrist_yaw_link")[0:3]
+            left_force = -self.robot_model.get_frame_wrench("left_wrist_yaw_link")[0:3]
+            right_force = -self.robot_model.get_frame_wrench("right_wrist_yaw_link")[0:3]
 
-            print(f"Left hand force: {left_force}, Right hand force: {right_force}")
+            # print(f"Left hand force: {left_force}, Right hand force: {right_force}")
 
             # # hardcode hand forces
             # left_force = self.config.left_hand_force.astype(np.float32)
             # right_force = self.config.right_hand_force.astype(np.float32)
+            # # zero hand forces
+            # left_force = np.zeros(3, dtype=np.float32)
+            # right_force = np.zeros(3, dtype=np.float32)
 
             e_t = np.concatenate([upper_pos, left_force, right_force], dtype=np.float32)
             if self.config.no_encode:
@@ -364,7 +367,9 @@ class Controller:
             self.z_history[0, :] = z_t
             z_flat = np.flip(self.z_history, axis=0).flatten().astype(np.float32)
 
-            actor_obs = np.concatenate([proprio, z_flat], axis=0).astype(np.float32)
+            # actor_obs = np.concatenate([proprio, z_flat], axis=0).astype(np.float32)
+            actor_obs = proprio.copy()
+            actor_obs[single_obs_dim*3: single_obs_dim * 3 + len(z_flat)] = z_flat
         else:
             actor_obs = proprio.astype(np.float32)
 
