@@ -58,6 +58,9 @@ JOINT_NAMES_PLOT = [
     "R_hip_yaw", "R_hip_pitch", "R_hip_roll", "R_knee", "R_ankle_pitch", "R_ankle_roll"
 ]
 
+KNEE_ANKLE_LEG_IDXS = [3, 4, 5, 9, 10, 11]
+KNEE_ANKLE_JOINT_NAMES = [JOINT_NAMES_PLOT[i] for i in KNEE_ANKLE_LEG_IDXS]
+
 ######################################################################
 ## Utility Functions
 ######################################################################
@@ -124,6 +127,7 @@ class Controller:
         # Initializing process variables
         self.qj = np.zeros(config.num_dofs, dtype=np.float32)
         self.dqj = np.zeros(config.num_dofs, dtype=np.float32)
+        self.tauj = np.zeros(config.num_dofs, dtype=np.float32)
 
         self.action = np.zeros(config.num_actions, dtype=np.float32)
 
@@ -137,6 +141,7 @@ class Controller:
 
         # Histories for data logging
         self.qpos_hist, self.dqpos_hist, self.target_dof_hist, self.t_hist = [], [], [], []
+        self.knee_ankle_tau_hist = []
         self.start_time = time.time()
 
         self.single_obs_dim = config.single_obs_dim
@@ -270,6 +275,7 @@ class Controller:
             # This populates self.qj[0:20] and self.dqj[0:20] (assuming 20 total DOFs)
             self.qj[i] = self.low_state.motor_state[motor_idx].q
             self.dqj[i] = self.low_state.motor_state[motor_idx].dq
+            self.tauj[i] = self.low_state.motor_state[motor_idx].tau_est
 
         # imu_state quaternion: w, x, y, z
         quat = self.low_state.imu_state.quaternion
@@ -348,8 +354,7 @@ class Controller:
             self.robot_model.update_kinematics()
             left_force = -self.robot_model.get_frame_wrench("left_wrist_yaw_link")[0:3]
             right_force = -self.robot_model.get_frame_wrench("right_wrist_yaw_link")[0:3]
-
-            # print(f"Left hand force: {left_force}, Right hand force: {right_force}")
+            print(f"Left hand force: {left_force}, Right hand force: {right_force}")
 
             # # hardcode hand forces
             # left_force = self.config.left_hand_force.astype(np.float32)
@@ -393,6 +398,7 @@ class Controller:
         self.t_hist.append(current_time)
         self.qpos_hist.append(self.qj.copy()) # Full qpos (27 DOFs)
         self.dqpos_hist.append(self.dqj.copy()) # Full dqpos (27 DOFs)
+        self.knee_ankle_tau_hist.append(self.tauj[KNEE_ANKLE_LEG_IDXS].copy())
         full_target_dof = np.concatenate((target_dof_pos, self.config.arm_waist_target), axis=0)
         self.target_dof_hist.append(full_target_dof)
         # -----------------------------
@@ -505,6 +511,7 @@ if __name__ == "__main__":
     qpos_hist_arr = np.array(controller.qpos_hist)
     dqpos_hist_arr = np.array(controller.dqpos_hist)
     target_dof_hist_arr = np.array(controller.target_dof_hist)
+    knee_ankle_tau_hist_arr = np.array(controller.knee_ankle_tau_hist)
     t_hist_arr = np.array(controller.t_hist)
 
     if not t_hist_arr.size:
@@ -527,3 +534,10 @@ if __name__ == "__main__":
         JOINT_NAMES_PLOT,
         os.path.join(log_dir, "dqpos.png")
     )
+
+    if knee_ankle_tau_hist_arr.size:
+        tau_save_path = os.path.join(log_dir, "knee_ankle_tau.csv")
+        tau_log = np.column_stack((t_hist_arr, knee_ankle_tau_hist_arr))
+        tau_header = "time," + ",".join(KNEE_ANKLE_JOINT_NAMES)
+        np.savetxt(tau_save_path, tau_log, delimiter=",", header=tau_header, comments="")
+        print(f"✅ Saved knee/ankle tau log to {tau_save_path}")
