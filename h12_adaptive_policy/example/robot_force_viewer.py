@@ -14,7 +14,7 @@ from h12_ros2_controller.core.robot_model import RobotModel
 
 def main():
     ChannelFactoryInitialize()
-    robot_model = RobotModel('./submodules/h12_ros2_controller/assets/h1_2/h1_2.urdf')
+    robot_model = RobotModel('./submodules/h12_ros2_controller/assets/h1_2/h1_2_handless.urdf')
     robot_model.init_visualizer()
     robot_model.config_visualizer(show_sensors=True, show_com=True, show_zmp=True)
     robot_model.init_subscriber()
@@ -25,8 +25,9 @@ def main():
         robot_model.update_visualizer()
 
         # estimate force
-        link_name = 'left_wrist_roll_link'
-        print(f'Force at {link_name}: {robot_model.get_frame_wrench(link_name)[0:3]}')
+        link_name = 'left_wrist_yaw_link'
+        wrench = robot_model.get_frame_wrench(link_name)
+        print(f'Force at {link_name}: {wrench[0:3]}')
 
         time.sleep(0.01)
 
