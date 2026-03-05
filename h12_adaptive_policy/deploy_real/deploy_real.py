@@ -367,6 +367,8 @@ class Controller:
             e_t = np.concatenate([upper_pos, left_force, right_force], dtype=np.float32)
             if self.config.no_encode:
                 e_t[:] = 0.0
+
+            print(e_t)
             with torch.no_grad():
                 z_t = self.encoder(torch.from_numpy(e_t).unsqueeze(0).float()).numpy().squeeze()
             self.z_history[1:, :] = self.z_history[:-1, :].copy()
