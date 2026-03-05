@@ -349,9 +349,11 @@ class Controller:
             left_force = self.robot_model.get_frame_wrench("left_wrist_yaw_link")[0:3]
             right_force = self.robot_model.get_frame_wrench("right_wrist_yaw_link")[0:3]
 
-            # hardcode hand forces
-            left_force = self.config.left_hand_force.astype(np.float32)
-            right_force = self.config.right_hand_force.astype(np.float32)
+            print(f"Left hand force: {left_force}, Right hand force: {right_force}")
+
+            # # hardcode hand forces
+            # left_force = self.config.left_hand_force.astype(np.float32)
+            # right_force = self.config.right_hand_force.astype(np.float32)
 
             e_t = np.concatenate([upper_pos, left_force, right_force], dtype=np.float32)
             if self.config.no_encode:
