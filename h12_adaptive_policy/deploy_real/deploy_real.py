@@ -140,7 +140,8 @@ class Controller:
         self.counter = 0
 
         # Histories for data logging
-        self.qpos_hist, self.dqpos_hist, self.target_dof_hist, self.t_hist = [], [], [], []
+        self.qpos_hist, self.dq_hist, self.target_dof_hist, self.t_hist = [], [], [], []
+        self.tau_hist = []
         self.knee_ankle_tau_hist = []
         self.start_time = time.time()
 
@@ -397,7 +398,8 @@ class Controller:
         current_time = time.time() - self.start_time
         self.t_hist.append(current_time)
         self.qpos_hist.append(self.qj.copy()) # Full qpos (27 DOFs)
-        self.dqpos_hist.append(self.dqj.copy()) # Full dqpos (27 DOFs)
+        self.dq_hist.append(self.dqj.copy()) # Full dq (27 DOFs)
+        self.tau_hist.append(self.tauj.copy()) # Full tau (27 DOFs)
         self.knee_ankle_tau_hist.append(self.tauj[KNEE_ANKLE_LEG_IDXS].copy())
         full_target_dof = np.concatenate((target_dof_pos, self.config.arm_waist_target), axis=0)
         self.target_dof_hist.append(full_target_dof)
@@ -448,9 +450,21 @@ if __name__ == "__main__":
     parser.add_argument("net", type=str, help="Network interface for DDS")
     parser.add_argument("config", type=str, nargs="?", default="RealDeploy/h1_2_real.yaml",
                         help="Config YAML path (root-relative or RealDeploy-relative)")
+    parser.add_argument("--save", type=str, required=True,
+                        help="Log subfolder name under data/real (e.g. run_001)")
     parser.add_argument("--keyboard", action="store_true",
                         help="Use keyboard listener instead of wireless remote")
     args = parser.parse_args()
+
+    folder_name = args.save.strip()
+    folder_path = Path(folder_name)
+    if (
+        not folder_name
+        or folder_path.is_absolute()
+        or len(folder_path.parts) != 1
+        or folder_name in {".", ".."}
+    ):
+        sys.exit("Invalid --save. Please provide a single folder name (no path separators).")
 
     config_arg = Path(args.config)
     candidate_paths = []
@@ -503,41 +517,59 @@ if __name__ == "__main__":
 
 
     # ----------------------------------------------------------------------------------
-    # --- POST-EXECUTION PLOTTING ---
+    # --- POST-EXECUTION LOG SAVE ---
     # ----------------------------------------------------------------------------------
-    log_dir = "logs/real"
+    log_dir = os.path.join("data", "real", folder_name)
     os.makedirs(log_dir, exist_ok=True)
 
     qpos_hist_arr = np.array(controller.qpos_hist)
-    dqpos_hist_arr = np.array(controller.dqpos_hist)
+    dq_hist_arr = np.array(controller.dq_hist)
+    tau_hist_arr = np.array(controller.tau_hist)
     target_dof_hist_arr = np.array(controller.target_dof_hist)
     knee_ankle_tau_hist_arr = np.array(controller.knee_ankle_tau_hist)
     t_hist_arr = np.array(controller.t_hist)
 
     if not t_hist_arr.size:
-        print("No data logged, skipping plots.")
+        print("No data logged, skipping save.")
         sys.exit() # Exit after cleanup and message if no data
 
-    # Plot qpos vs. target_dof_pos
-    plot_qpos_vs_action(
-        t_hist_arr,
-        qpos_hist_arr,
-        target_dof_hist_arr,
-        JOINT_NAMES_PLOT,
-        os.path.join(log_dir, "qpos_vs_target.png")
-    )
+    qpos_save_path = os.path.join(log_dir, "qpos.npy")
+    dq_save_path = os.path.join(log_dir, "dq.npy")
+    tau_save_path = os.path.join(log_dir, "tau.npy")
+    target_dof_save_path = os.path.join(log_dir, "target_dof.npy")
+    time_save_path = os.path.join(log_dir, "time.npy")
 
-    # Plot dqpos
-    plot_dqpos(
-        t_hist_arr,
-        dqpos_hist_arr,
-        JOINT_NAMES_PLOT,
-        os.path.join(log_dir, "dqpos.png")
-    )
+    np.save(qpos_save_path, qpos_hist_arr)
+    np.save(dq_save_path, dq_hist_arr)
+    np.save(tau_save_path, tau_hist_arr)
+    np.save(target_dof_save_path, target_dof_hist_arr)
+    np.save(time_save_path, t_hist_arr)
+
+    print(f"✅ Saved qpos log to {qpos_save_path}")
+    print(f"✅ Saved dq log to {dq_save_path}")
+    print(f"✅ Saved tau log to {tau_save_path}")
+    print(f"✅ Saved target_dof log to {target_dof_save_path}")
+    print(f"✅ Saved time log to {time_save_path}")
+
+    # Plotting disabled by request.
+    # plot_qpos_vs_action(
+    #     t_hist_arr,
+    #     qpos_hist_arr,
+    #     target_dof_hist_arr,
+    #     JOINT_NAMES_PLOT,
+    #     os.path.join(log_dir, "qpos_vs_target.png")
+    # )
+
+    # plot_dqpos(
+    #     t_hist_arr,
+    #     dq_hist_arr,
+    #     JOINT_NAMES_PLOT,
+    #     os.path.join(log_dir, "dqpos.png")
+    # )
 
     if knee_ankle_tau_hist_arr.size:
-        tau_save_path = os.path.join(log_dir, "knee_ankle_tau.csv")
+        knee_tau_save_path = os.path.join(log_dir, "knee_ankle_tau.csv")
         tau_log = np.column_stack((t_hist_arr, knee_ankle_tau_hist_arr))
         tau_header = "time," + ",".join(KNEE_ANKLE_JOINT_NAMES)
-        np.savetxt(tau_save_path, tau_log, delimiter=",", header=tau_header, comments="")
-        print(f"✅ Saved knee/ankle tau log to {tau_save_path}")
+        np.savetxt(knee_tau_save_path, tau_log, delimiter=",", header=tau_header, comments="")
+        print(f"✅ Saved knee/ankle tau log to {knee_tau_save_path}")

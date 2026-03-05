@@ -8,13 +8,13 @@ time,L_knee,L_ankle_pitch,L_ankle_roll,R_knee,R_ankle_pitch,R_ankle_roll
 
 import argparse
 from pathlib import Path
+import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
 
 
-DEFAULT_INPUT = Path("logs/real/knee_ankle_tau.csv")
-DEFAULT_OUTPUT = Path("figure/knee_ankle_tau.png")
+DEFAULT_OUTPUT_FILENAME = "knee_ankle_tau.png"
 
 
 def load_tau_csv(csv_path: Path):
@@ -73,16 +73,10 @@ def plot_knee_ankle_tau(time_s, tau_dict, output_path: Path, title: str):
 def main():
     parser = argparse.ArgumentParser(description="Plot knee/ankle torques from deploy_real CSV log")
     parser.add_argument(
-        "--input",
-        type=Path,
-        default=DEFAULT_INPUT,
-        help=f"Input CSV path (default: {DEFAULT_INPUT})",
-    )
-    parser.add_argument(
-        "--output",
-        type=Path,
-        default=DEFAULT_OUTPUT,
-        help=f"Output image path (default: {DEFAULT_OUTPUT})",
+        "--load",
+        type=str,
+        required=True,
+        help="Folder name under data/real (e.g. run_001)",
     )
     parser.add_argument(
         "--title",
@@ -92,10 +86,23 @@ def main():
     )
     args = parser.parse_args()
 
-    time_s, tau_dict = load_tau_csv(args.input)
-    plot_knee_ankle_tau(time_s, tau_dict, args.output, args.title)
+    load_folder = args.load.strip()
+    load_folder_path = Path(load_folder)
+    if (
+        not load_folder
+        or load_folder_path.is_absolute()
+        or len(load_folder_path.parts) != 1
+        or load_folder in {".", ".."}
+    ):
+        sys.exit("Invalid --load. Please provide a single folder name (no path separators).")
 
-    print(f"Saved figure to: {args.output}")
+    input_path = Path("data") / "real" / load_folder / "knee_ankle_tau.csv"
+    output_path = Path("figure") / "real" / load_folder / DEFAULT_OUTPUT_FILENAME
+
+    time_s, tau_dict = load_tau_csv(input_path)
+    plot_knee_ankle_tau(time_s, tau_dict, output_path, args.title)
+
+    print(f"Saved figure to: {output_path}")
 
 
 if __name__ == "__main__":
