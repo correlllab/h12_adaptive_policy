@@ -101,12 +101,13 @@ def plot_final_figure(
     start: int,
     end: int,
     output_path: Path,
+    extra_output_path: Path | None = None,
     no_encode_mode: bool = False,
 ):
-    left_q_color = "#1f77b4"
-    right_q_color = "#ff7f0e"
-    left_torque_color = "#2ca02c"
-    right_torque_color = "#d62728"
+    left_position_color = "#4D96FF"
+    right_position_color = "#FFB347"
+    left_torque_color = "#6BCB77"
+    right_torque_color = "#FF6B6B"
 
     fig_width = 15 * (2.0 / 3.0) if no_encode_mode else 15
     fig, axes_q = plt.subplots(3, 1, figsize=(fig_width, 9), sharex=True)
@@ -127,30 +128,30 @@ def plot_final_figure(
         axes_q[0].plot(
             time_q,
             q_slice[:, l_hip_pitch],
-            color=left_q_color,
+            color=left_position_color,
             label="L Hip Pitch Position",
-            linewidth=3.2,
+            linewidth=3.6,
         )
         axes_q[0].plot(
             time_q,
             q_slice[:, r_hip_pitch],
-            color=right_q_color,
+            color=right_position_color,
             label="R Hip Pitch Position",
-            linewidth=3.2,
+            linewidth=3.6,
         )
         axes_q[1].plot(
             time_q,
             q_slice[:, l_ankle_pitch],
-            color=left_q_color,
+            color=left_position_color,
             label="L Ankle Pitch Position",
-            linewidth=3.2,
+            linewidth=3.6,
         )
         axes_q[1].plot(
             time_q,
             q_slice[:, r_ankle_pitch],
-            color=right_q_color,
+            color=right_position_color,
             label="R Ankle Pitch Position",
-            linewidth=3.2,
+            linewidth=3.6,
         )
 
     if tau_slice.size:
@@ -159,7 +160,7 @@ def plot_final_figure(
             tau_slice[:, l_hip_pitch],
             color=left_torque_color,
             linestyle="--",
-            linewidth=2.4,
+            linewidth=2.8,
             label="L Hip Pitch Torque",
         )
         axes_tau[0].plot(
@@ -167,7 +168,7 @@ def plot_final_figure(
             tau_slice[:, r_hip_pitch],
             color=right_torque_color,
             linestyle="--",
-            linewidth=2.4,
+            linewidth=2.8,
             label="R Hip Pitch Torque",
         )
         axes_tau[1].plot(
@@ -175,7 +176,7 @@ def plot_final_figure(
             tau_slice[:, l_ankle_pitch],
             color=left_torque_color,
             linestyle="--",
-            linewidth=2.4,
+            linewidth=2.8,
             label="L Ankle Pitch Torque",
         )
         axes_tau[1].plot(
@@ -183,7 +184,7 @@ def plot_final_figure(
             tau_slice[:, r_ankle_pitch],
             color=right_torque_color,
             linestyle="--",
-            linewidth=2.4,
+            linewidth=2.8,
             label="R Ankle Pitch Torque",
         )
         axes_tau[2].plot(
@@ -191,7 +192,7 @@ def plot_final_figure(
             tau_slice[:, l_elbow],
             color=left_torque_color,
             linestyle="--",
-            linewidth=2.4,
+            linewidth=2.8,
             label="L Elbow Torque",
         )
         axes_tau[2].plot(
@@ -199,7 +200,7 @@ def plot_final_figure(
             tau_slice[:, r_elbow],
             color=right_torque_color,
             linestyle="--",
-            linewidth=2.4,
+            linewidth=2.8,
             label="R Elbow Torque",
         )
 
@@ -265,6 +266,9 @@ def plot_final_figure(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     plt.tight_layout()
     plt.savefig(output_path, dpi=200, bbox_inches="tight")
+    if extra_output_path is not None:
+        extra_output_path.parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(extra_output_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -311,8 +315,18 @@ def main():
         sys.exit("Invalid frame range: --end must be greater than --start")
 
     output_path = Path("figure") / "real" / load_folder / "final_figure.png"
-    plot_final_figure(q, tau, start, end, output_path, no_encode_mode=no_encode_mode)
+    extra_output_path = Path("figure") / "real" / f"{load_folder}.png"
+    plot_final_figure(
+        q,
+        tau,
+        start,
+        end,
+        output_path,
+        extra_output_path=extra_output_path,
+        no_encode_mode=no_encode_mode,
+    )
     print(f"Saved figure to: {output_path}")
+    print(f"Saved figure to: {extra_output_path}")
 
 
 if __name__ == "__main__":
