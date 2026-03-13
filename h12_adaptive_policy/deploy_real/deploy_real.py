@@ -361,9 +361,14 @@ class Controller:
             # left_force = np.array([-115.08508926, -30.89641282, 532.00016259])
             # right_force = np.array([74.82097678, 34.1630265, -37.48545911])
 
+            # # random hand forces for testing
+            # left_force = np.random.uniform(-500, 500, size=3)
+            # right_force = np.random.uniform(-500, 500, size=3)
+
             # # hardcode hand forces
             # left_force = self.config.left_hand_force.astype(np.float32)
             # right_force = self.config.right_hand_force.astype(np.float32)
+
             # zero hand forces
             left_force = np.zeros(3, dtype=np.float32)
             right_force = np.zeros(3, dtype=np.float32)
