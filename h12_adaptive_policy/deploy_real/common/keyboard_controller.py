@@ -23,7 +23,7 @@ class KeyboardRemoteController:
         self._key_to_button = {
             "s": KeyMap.start,
             "a": KeyMap.A,
-            "e": KeyMap.select,
+            # "e": KeyMap.select,
             "q": KeyMap.L1,
             "w": KeyMap.R1,
             "x": KeyMap.X,
@@ -88,7 +88,7 @@ def print_keyboard_mapping():
     print("Keyboard remote mapping:")
     print("  s -> START")
     print("  a -> A")
-    print("  e -> SELECT (exit)")
+    # print("  e -> SELECT (exit)")
     print("  q -> L1")
     print("  w -> R1")
     print("  b/x/y -> B/X/Y")

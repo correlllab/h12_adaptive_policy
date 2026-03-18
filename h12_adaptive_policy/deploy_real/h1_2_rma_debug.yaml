@@ -5,8 +5,9 @@ control_dt: 0.02
 msg_type: "hg"
 imu_type: "torso"
 
-lowcmd_topic: "rt/safety/lowcmd_in"
 # lowcmd_topic: "rt/lowcmd"
+# lowcmd_topic: "rt/safety/lowcmd_in"
+lowcmd_topic: "rt/safety/lowcmd_lower_in"
 lowstate_topic: "rt/lowstate"
 
 leg_joint2motor_idx: [0, 1, 2, 3, 4, 5,
