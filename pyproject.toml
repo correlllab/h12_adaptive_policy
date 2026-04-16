@@ -1,0 +1,52 @@
+[project]
+name = "h12_adaptive_policy"
+version = "0.1.0"
+description = "Humanoid policy adaptive to end-effector payloads (H1-2)."
+requires-python = ">=3.10,<3.11"
+dependencies = [
+    # common libs
+    "numpy",
+    "scipy",
+    "pandas",
+    "tqdm",
+    "matplotlib",
+    "pynput",
+    "pyyaml",
+    "pygame",
+    # torch (RMA policy inference)
+    "torch",
+    "torchvision",
+    "torchaudio",
+    # graphics / geometry
+    "meshio",
+    "open3d",
+    "pyvista",
+    "pyquaternion",
+    "meshcat",
+    "meshcat-shapes",
+    "opencv-python",
+    # sim / kinematics
+    "mujoco>=3.2.3",
+    "pin>=3.4.0",
+    "pin-pink>=3.3.0",
+    "qpsolvers[open_source_solvers]>=4.8.0",
+    "robot_descriptions",
+    # editable submodule + unitree DDS SDK
+    "h12_ros2_controller",
+    "unitree_sdk2py",
+]
+
+[tool.uv]
+package = false
+required-environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+
+[tool.uv.sources]
+h12_ros2_controller = { path = "submodules/h12_ros2_controller", editable = true }
+# Editable install of the Unitree Python SDK. Non-editable (wheel) installs
+# break because upstream's setup.py ships an `__init__.py` that imports a `b2`
+# subpackage that find_packages() silently drops (no `__init__.py` under b2/).
+# An editable install uses the source tree directly, so namespace-package
+# resolution picks up `b2` and the import succeeds.
+unitree_sdk2py = { path = "submodules/unitree_sdk2_python", editable = true }
