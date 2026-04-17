@@ -32,7 +32,7 @@ dependencies = [
     "qpsolvers[open_source_solvers]>=4.8.0",
     "robot_descriptions",
     # editable submodule + unitree DDS SDK
-    "h12_ros2_controller",
+    # "h12_ros2_controller",
     "unitree_sdk2py",
 ]
 
@@ -43,7 +43,7 @@ required-environments = [
 ]
 
 [tool.uv.sources]
-h12_ros2_controller = { path = "submodules/h12_ros2_controller", editable = true }
+# h12_ros2_controller = { path = "submodules/h12_ros2_controller", editable = true }
 # Editable install of the Unitree Python SDK. Non-editable (wheel) installs
 # break because upstream's setup.py ships an `__init__.py` that imports a `b2`
 # subpackage that find_packages() silently drops (no `__init__.py` under b2/).
