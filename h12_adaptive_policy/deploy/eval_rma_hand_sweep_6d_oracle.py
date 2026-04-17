@@ -59,7 +59,20 @@ def run_one_vec(config, m, left_vec_3d, right_vec_3d, duration_s, policy, encode
     d = mujoco.MjData(m)
     decim = config["control_decimation"]
     dt = config["simulation_dt"]
-    n_joints = d.qpos.shape[0] - 7 if n_joints is None else n_joints
+    n_joints_total = d.qpos.shape[0] - 7 if n_joints is None else n_joints
+    policy_joints = int(config.get("policy_num_joints", 27))
+    h12_ctrl_count = int(config.get("h12_ctrl_count", policy_joints))
+
+    h12_joint_ids = m.actuator_trnid[:h12_ctrl_count, 0].astype(np.int32)
+    h12_qpos_adr = m.jnt_qposadr[h12_joint_ids].astype(np.int32)
+    h12_qvel_adr = m.jnt_dofadr[h12_joint_ids].astype(np.int32)
+
+    leg_count = config["num_actions"]
+    leg_qpos_adr = h12_qpos_adr[:leg_count]
+    leg_qvel_adr = h12_qvel_adr[:leg_count]
+    upper_qpos_adr = h12_qpos_adr[leg_count:h12_ctrl_count]
+    upper_qvel_adr = h12_qvel_adr[leg_count:h12_ctrl_count]
+
     left_force_3d = np.asarray(left_vec_3d, dtype=np.float32)
     right_force_3d = np.asarray(right_vec_3d, dtype=np.float32)
 
@@ -68,7 +81,11 @@ def run_one_vec(config, m, left_vec_3d, right_vec_3d, duration_s, policy, encode
     cmd = config["cmd_init"].copy()
     height_cmd = float(height_cmd_override) if height_cmd_override is not None else config["height_cmd"]
 
-    single_obs, single_obs_dim = compute_observation(d, config, action, cmd, height_cmd, n_joints)
+    qj_h12 = d.qpos[h12_qpos_adr]
+    dqj_h12 = d.qvel[h12_qvel_adr]
+    single_obs, single_obs_dim = compute_observation(
+        d, config, action, cmd, height_cmd, policy_joints, qj=qj_h12, dqj=dqj_h12
+    )
     obs_history = __import__("collections").deque(maxlen=config["obs_history_len"])
     for _ in range(config["obs_history_len"]):
         obs_history.append(single_obs.copy())
@@ -87,43 +104,66 @@ def run_one_vec(config, m, left_vec_3d, right_vec_3d, duration_s, policy, encode
 
         leg_tau = pd_control(
             target_dof_pos,
-            d.qpos[7 : 7 + config["num_actions"]],
+            d.qpos[leg_qpos_adr],
             config["kps"],
             np.zeros_like(config["kps"]),
-            d.qvel[6 : 6 + config["num_actions"]],
+            d.qvel[leg_qvel_adr],
             config["kds"],
         )
         leg_tau = np.nan_to_num(leg_tau, nan=0.0, posinf=0.0, neginf=0.0)
         leg_tau = np.clip(leg_tau, -max_tau, max_tau)
         d.ctrl[: config["num_actions"]] = leg_tau
 
-        if n_joints > config["num_actions"]:
-            kps_arm = config.get("kps_arms", np.ones(n_joints - config["num_actions"], dtype=np.float32) * 500.0)
-            kds_arm = config.get("kds_arms", np.ones(n_joints - config["num_actions"], dtype=np.float32) * 5.0)
-            arm_target_positions = config.get("default_angles_arms", np.zeros(n_joints - config["num_actions"], dtype=np.float32))
-            if len(arm_target_positions) < n_joints - config["num_actions"]:
-                arm_target_positions = np.zeros(n_joints - config["num_actions"], dtype=np.float32)
+        upper_h12_count = h12_ctrl_count - config["num_actions"]
+        if upper_h12_count > 0:
+            kps_arm = config.get("kps_arms", np.ones(upper_h12_count, dtype=np.float32) * 500.0)
+            kds_arm = config.get("kds_arms", np.ones(upper_h12_count, dtype=np.float32) * 5.0)
+            arm_target_positions = config.get("default_angles_arms", np.zeros(upper_h12_count, dtype=np.float32))
+            if len(arm_target_positions) < upper_h12_count:
+                arm_target_positions = np.zeros(upper_h12_count, dtype=np.float32)
             arm_tau = pd_control(
-                arm_target_positions[: n_joints - config["num_actions"]],
-                d.qpos[7 + config["num_actions"] : 7 + n_joints],
+                arm_target_positions[:upper_h12_count],
+                d.qpos[upper_qpos_adr],
                 kps_arm,
-                np.zeros(n_joints - config["num_actions"]),
-                d.qvel[6 + config["num_actions"] : 6 + n_joints],
+                np.zeros(upper_h12_count),
+                d.qvel[upper_qvel_adr],
                 kds_arm,
             )
             arm_tau = np.nan_to_num(arm_tau, nan=0.0, posinf=0.0, neginf=0.0)
             arm_tau = np.clip(arm_tau, -max_tau, max_tau)
-            d.ctrl[config["num_actions"] :] = arm_tau
+            d.ctrl[config["num_actions"] : h12_ctrl_count] = arm_tau
+
+        if d.ctrl.shape[0] > h12_ctrl_count:
+            gripper_ctrlrange = m.actuator_ctrlrange[h12_ctrl_count:, :]
+            d.ctrl[h12_ctrl_count:] = 0.5 * (gripper_ctrlrange[:, 0] + gripper_ctrlrange[:, 1])
 
         mujoco.mj_step(m, d)
 
         if step % decim == 0:
-            single_obs, _ = compute_observation(d, config, action, cmd, height_cmd, n_joints)
+            qj_h12 = d.qpos[h12_qpos_adr]
+            dqj_h12 = d.qvel[h12_qvel_adr]
+            single_obs, _ = compute_observation(
+                d, config, action, cmd, height_cmd, policy_joints, qj=qj_h12, dqj=dqj_h12
+            )
             obs_history.append(single_obs)
             if no_encode:
-                e_t = build_et_mujoco(d.qpos, np.zeros(3, dtype=np.float32), np.zeros(3, dtype=np.float32), config["num_actions"])
+                e_t = build_et_mujoco(
+                    d.qpos,
+                    np.zeros(3, dtype=np.float32),
+                    np.zeros(3, dtype=np.float32),
+                    config["num_actions"],
+                    policy_joints,
+                    qj_h12,
+                )
             else:
-                e_t = build_et_mujoco(d.qpos, left_force_3d, right_force_3d, config["num_actions"])
+                e_t = build_et_mujoco(
+                    d.qpos,
+                    left_force_3d,
+                    right_force_3d,
+                    config["num_actions"],
+                    policy_joints,
+                    qj_h12,
+                )
             if encoder is not None:
                 with torch.no_grad():
                     z_t = encoder(torch.from_numpy(e_t).unsqueeze(0).float()).numpy().squeeze()

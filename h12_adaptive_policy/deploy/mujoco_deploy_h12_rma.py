@@ -15,15 +15,18 @@ import mujoco
 import mujoco.viewer
 # from legged_gym import LEGGED_GYM_ROOT_DIR
 
-# RMA: repo root for encoder import
+# Make `RMA.rma_modules` importable regardless of cwd. RMA lives at
+# h12_adaptive_policy/RMA/, so we add the h12_adaptive_policy package dir
+# (one level above deploy/) to sys.path.
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-_REPO_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, "../.."))
-if _REPO_ROOT not in sys.path:
-    sys.path.insert(0, _REPO_ROOT)
+_PACKAGE_DIR = os.path.abspath(os.path.join(_SCRIPT_DIR, ".."))
+if _PACKAGE_DIR not in sys.path:
+    sys.path.insert(0, _PACKAGE_DIR)
 
 RMA_LATENT_DIM = 8
 RMA_ACTOR_Z_DIM = 24   # 3 * 8
 RMA_ET_DIM = 21        # 15 upper dof + left_xyz(3) + right_xyz(3), hand-only
+H12_POLICY_JOINTS = 27
 
 
 def load_config(config_path):
@@ -74,10 +77,16 @@ def get_gravity_orientation(quat):
     return quat_rotate_inverse(quat, np.array([0.0, 0.0, -1.0]))
 
 
-def compute_observation(d, config, action, cmd, height_cmd, n_joints):
+def compute_observation(d, config, action, cmd, height_cmd, n_joints, qj=None, dqj=None):
     """Same as mujoco_deploy_h12: single obs 76 dim."""
-    qj = d.qpos[7 : 7 + n_joints].copy()
-    dqj = d.qvel[6 : 6 + n_joints].copy()
+    if qj is None:
+        qj = d.qpos[7 : 7 + n_joints].copy()
+    else:
+        qj = qj.copy()
+    if dqj is None:
+        dqj = d.qvel[6 : 6 + n_joints].copy()
+    else:
+        dqj = dqj.copy()
     quat = d.qpos[3:7].copy()
     omega = d.qvel[3:6].copy()
 
@@ -106,9 +115,19 @@ def compute_observation(d, config, action, cmd, height_cmd, n_joints):
     return single_obs, single_obs_dim
 
 
-def build_et_mujoco(qpos, left_hand_force_xyz, right_hand_force_xyz, num_actions=12):
+def build_et_mujoco(
+    qpos,
+    left_hand_force_xyz,
+    right_hand_force_xyz,
+    num_actions=12,
+    policy_joints=H12_POLICY_JOINTS,
+    qj_policy=None,
+):
     """e_t = 15 upper-body dof + left_xyz(3) + right_xyz(3) = 21 (hand-only, same order as Isaac build_et_from_gym)."""
-    upper = qpos[7 + num_actions : 7 + 27].copy()
+    if qj_policy is None:
+        upper = qpos[7 + num_actions : 7 + policy_joints].copy()
+    else:
+        upper = qj_policy[num_actions:policy_joints].copy()
     return np.concatenate([upper, np.asarray(left_hand_force_xyz, dtype=np.float32), np.asarray(right_hand_force_xyz, dtype=np.float32)], dtype=np.float32)
 
 
@@ -138,8 +157,32 @@ def main():
     d = mujoco.MjData(m)
     m.opt.timestep = config["simulation_dt"]
 
-    n_joints = d.qpos.shape[0] - 7
-    print(f"Model DOFs (qpos): {d.qpos.shape[0]}, joints: {n_joints}, ctrl size: {d.ctrl.shape[0]}")
+    n_joints_total = d.qpos.shape[0] - 7
+    policy_joints = int(config.get("policy_num_joints", H12_POLICY_JOINTS))
+    if n_joints_total < policy_joints:
+        raise ValueError(f"Model has only {n_joints_total} joints, but policy expects {policy_joints} joints")
+
+    h12_ctrl_count = int(config.get("h12_ctrl_count", policy_joints))
+    if d.ctrl.shape[0] < h12_ctrl_count:
+        raise ValueError(f"Model has only {d.ctrl.shape[0]} actuators, but h12_ctrl_count={h12_ctrl_count}")
+
+    # Build stable index mapping for H12 joints from actuator transmissions.
+    # This avoids assuming qpos/qvel are contiguous when extra joints (e.g., grippers)
+    # are inserted into the kinematic tree.
+    h12_joint_ids = m.actuator_trnid[:h12_ctrl_count, 0].astype(np.int32)
+    h12_qpos_adr = m.jnt_qposadr[h12_joint_ids].astype(np.int32)
+    h12_qvel_adr = m.jnt_dofadr[h12_joint_ids].astype(np.int32)
+
+    leg_count = config["num_actions"]
+    leg_qpos_adr = h12_qpos_adr[:leg_count]
+    leg_qvel_adr = h12_qvel_adr[:leg_count]
+    upper_qpos_adr = h12_qpos_adr[leg_count:h12_ctrl_count]
+    upper_qvel_adr = h12_qvel_adr[leg_count:h12_ctrl_count]
+
+    print(
+        f"Model DOFs (qpos): {d.qpos.shape[0]}, joints(total): {n_joints_total}, "
+        f"policy joints: {policy_joints}, ctrl size(total): {d.ctrl.shape[0]}, h12 ctrl count: {h12_ctrl_count}"
+    )
 
     # RMA: body ids and forces (hand-only; no torso)
     left_wrist_id = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "left_wrist_roll_link")
@@ -166,7 +209,18 @@ def main():
     cmd = config["cmd_init"].copy()
     height_cmd = config["height_cmd"]
 
-    single_obs, single_obs_dim = compute_observation(d, config, action, cmd, height_cmd, n_joints)
+    qj_h12 = d.qpos[h12_qpos_adr]
+    dqj_h12 = d.qvel[h12_qvel_adr]
+    single_obs, single_obs_dim = compute_observation(
+        d,
+        config,
+        action,
+        cmd,
+        height_cmd,
+        policy_joints,
+        qj=qj_h12,
+        dqj=dqj_h12,
+    )
     obs_history = collections.deque(maxlen=config["obs_history_len"])
     for _ in range(config["obs_history_len"]):
         obs_history.append(np.zeros(single_obs_dim, dtype=np.float32))
@@ -192,10 +246,10 @@ def main():
 
             leg_tau = pd_control(
                 target_dof_pos,
-                d.qpos[7 : 7 + config["num_actions"]],
+                d.qpos[leg_qpos_adr],
                 config["kps"],
                 np.zeros_like(config["kps"]),
-                d.qvel[6 : 6 + config["num_actions"]],
+                d.qvel[leg_qvel_adr],
                 config["kds"],
             )
             leg_tau = np.nan_to_num(leg_tau, nan=0.0, posinf=0.0, neginf=0.0)
@@ -203,36 +257,67 @@ def main():
             leg_tau = np.clip(leg_tau, -max_tau, max_tau)
             d.ctrl[: config["num_actions"]] = leg_tau
 
-            if n_joints > config["num_actions"]:
-                kps_arm = config.get("kps_arms", np.ones(n_joints - config["num_actions"], dtype=np.float32) * 500.0)
-                kds_arm = config.get("kds_arms", np.ones(n_joints - config["num_actions"], dtype=np.float32) * 5.0)
-                arm_target_positions = config.get("default_angles_arms", np.zeros(n_joints - config["num_actions"], dtype=np.float32))
-                if len(arm_target_positions) < n_joints - config["num_actions"]:
-                    arm_target_positions = np.zeros(n_joints - config["num_actions"], dtype=np.float32)
+            upper_h12_count = h12_ctrl_count - config["num_actions"]
+            if upper_h12_count > 0:
+                kps_arm = config.get("kps_arms", np.ones(upper_h12_count, dtype=np.float32) * 500.0)
+                kds_arm = config.get("kds_arms", np.ones(upper_h12_count, dtype=np.float32) * 5.0)
+                arm_target_positions = config.get("default_angles_arms", np.zeros(upper_h12_count, dtype=np.float32))
+                if len(arm_target_positions) < upper_h12_count:
+                    arm_target_positions = np.zeros(upper_h12_count, dtype=np.float32)
                 arm_tau = pd_control(
-                    arm_target_positions[: n_joints - config["num_actions"]],
-                    d.qpos[7 + config["num_actions"] : 7 + n_joints],
+                    arm_target_positions[:upper_h12_count],
+                    d.qpos[upper_qpos_adr],
                     kps_arm,
-                    np.zeros(n_joints - config["num_actions"]),
-                    d.qvel[6 + config["num_actions"] : 6 + n_joints],
+                    np.zeros(upper_h12_count),
+                    d.qvel[upper_qvel_adr],
                     kds_arm,
                 )
                 arm_tau = np.nan_to_num(arm_tau, nan=0.0, posinf=0.0, neginf=0.0)
                 arm_tau = np.clip(arm_tau, -max_tau, max_tau)
-                d.ctrl[config["num_actions"] :] = arm_tau
+                d.ctrl[config["num_actions"] : h12_ctrl_count] = arm_tau
+
+            # Keep any extra actuators (e.g., Magpie grippers) passive for 27-action policies.
+            if d.ctrl.shape[0] > h12_ctrl_count:
+                gripper_ctrlrange = m.actuator_ctrlrange[h12_ctrl_count:, :]
+                d.ctrl[h12_ctrl_count:] = 0.5 * (gripper_ctrlrange[:, 0] + gripper_ctrlrange[:, 1])
 
             mujoco.mj_step(m, d)
             counter += 1
 
             if counter % config["control_decimation"] == 0:
-                single_obs, _ = compute_observation(d, config, action, cmd, height_cmd, n_joints)
+                qj_h12 = d.qpos[h12_qpos_adr]
+                dqj_h12 = d.qvel[h12_qvel_adr]
+                single_obs, _ = compute_observation(
+                    d,
+                    config,
+                    action,
+                    cmd,
+                    height_cmd,
+                    policy_joints,
+                    qj=qj_h12,
+                    dqj=dqj_h12,
+                )
                 obs_history.append(single_obs)
 
                 # RMA: e_t -> encoder -> z_t; update z history (hand-only 3D)
                 if no_encode:
-                    e_t = build_et_mujoco(d.qpos, np.zeros(3, dtype=np.float32), np.zeros(3, dtype=np.float32), config["num_actions"])
+                    e_t = build_et_mujoco(
+                        d.qpos,
+                        np.zeros(3, dtype=np.float32),
+                        np.zeros(3, dtype=np.float32),
+                        config["num_actions"],
+                        policy_joints,
+                        qj_h12,
+                    )
                 else:
-                    e_t = build_et_mujoco(d.qpos, left_hand_force, right_hand_force, config["num_actions"])
+                    e_t = build_et_mujoco(
+                        d.qpos,
+                        left_hand_force,
+                        right_hand_force,
+                        config["num_actions"],
+                        policy_joints,
+                        qj_h12,
+                    )
                 if encoder is not None:
                     with torch.no_grad():
                         z_t = encoder(torch.from_numpy(e_t).unsqueeze(0).float()).numpy().squeeze()
