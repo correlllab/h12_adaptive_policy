@@ -1,6 +1,6 @@
-policy_path: "data/rma_hand/policy.pt"
-encoder_path: "data/rma_hand/encoder_3999.pt"
-xml_path: "h1_2/scene.xml"
+policy_path: "../../data/rma_hand/policy.pt"
+encoder_path: "../../data/rma_hand/encoder_3999.pt"
+xml_path: "../../h1_2/scene.xml"
 
 # Simulation parameters
 simulation_duration: 60.0
