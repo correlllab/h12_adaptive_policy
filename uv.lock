@@ -764,7 +764,6 @@ name = "h12-adaptive-policy"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
-    { name = "h12-ros2-controller" },
     { name = "matplotlib" },
     { name = "meshcat" },
     { name = "meshcat-shapes" },
@@ -793,7 +792,6 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "h12-ros2-controller", editable = "submodules/h12_ros2_controller" },
     { name = "matplotlib" },
     { name = "meshcat" },
     { name = "meshcat-shapes" },
@@ -819,17 +817,6 @@ requires-dist = [
     { name = "tqdm" },
     { name = "unitree-sdk2py", editable = "submodules/unitree_sdk2_python" },
 ]
-
-[[package]]
-name = "h12-ros2-controller"
-version = "0.0.1"
-source = { editable = "submodules/h12_ros2_controller" }
-dependencies = [
-    { name = "setuptools" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "setuptools" }]
 
 [[package]]
 name = "highspy"

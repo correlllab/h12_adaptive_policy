@@ -169,7 +169,8 @@ class Controller:
             raise ValueError("Invalid msg_type")
 
         # start robot model
-        self.robot_model = RobotModel('./submodules/h12_ros2_controller/assets/h1_2/h1_2_handless.urdf')
+        self.robot_model = RobotModel('./submodules/h12_ros2_controller/assets/h1_2/h1_2_handless.urdf',
+                                      handless=True)
         self.robot_model.init_subscriber()
 
         # wait for the subscriber to receive data

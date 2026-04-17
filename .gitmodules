@@ -1,3 +1,6 @@
 [submodule "h12_ros2_controller"]
 	path = submodules/h12_ros2_controller
 	url = git@github.com:correlllab/h12_ros2_controller.git
+[submodule "submodules/unitree_sdk2_python"]
+	path = submodules/unitree_sdk2_python
+	url = git@github.com:Oya-Tomo/unitree_sdk2_python.git
