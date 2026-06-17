@@ -4,15 +4,10 @@ Humanoid policy adaptive to end-effector payloads.
 
 ## Installation
 
-Both `uv` and `conda` flows are supported. `uv` is the recommended path: it
-resolves the full stack (RMA policy deps + the `h12_ros2_controller` and
-`unitree_sdk2_python` submodules) from a single `pyproject.toml` and creates a
-local `.venv`.
+This project runs in a `conda` environment (Python 3.10).
 
-### Option A: uv (recommended)
-
-1. Install [`uv`](https://docs.astral.sh/uv/) (e.g. `curl -LsSf https://astral.sh/uv/install.sh | sh`).
-2. Clone this repo and initialize its submodules:
+1. Clone the repo and initialize its submodules (`unitree_sdk2_python`,
+   `h12_ros2_controller`, and `h12_safety_layer`):
 
     ```bash
     git clone https://github.com/correlllab/h12_adaptive_policy.git
@@ -20,49 +15,35 @@ local `.venv`.
     git submodule update --init --recursive
     ```
 
-3. Let `uv` create the environment and install every dependency (both the
-   `h12_ros2_controller` and `unitree_sdk2_python` submodules are installed as
-   editable path dependencies):
+2. Create and activate the environment from `environment.yml`:
 
     ```bash
-    uv sync
+    conda env create -f environment.yml
+    conda activate adaptive_env
     ```
 
-   This creates `.venv/` pinned to Python 3.10. All subsequent commands should
-   be invoked via `uv run ...`, which activates the venv automatically.
+3. Install the vendored submodule packages (editable) into the env:
+
+    ```bash
+    pip install -e submodules/unitree_sdk2_python
+    pip install -e submodules/h12_ros2_controller
+    ```
+
+   The Unitree SDK must be installed **editable** — a non-editable wheel install
+   drops its `b2` subpackage and the import fails. `h12_safety_layer` does not need
+   installing: the MuJoCo deploy adds it to `sys.path` automatically and its relay
+   script bootstraps its own path.
+
 4. Smoke-test the install:
 
     ```bash
-    uv run python -c "import mujoco, torch, pinocchio, h12_ros2_controller; print('ok')"
+    python -c "import mujoco, torch, pinocchio, h12_ros2_controller; print('ok')"
     ```
 
 5. Run the Mujoco RMA deployment from the repo root:
 
     ```bash
-    uv run python h12_adaptive_policy/deploy/mujoco_deploy_h12_rma.py
-    ```
-
-See [docs/mujoco_frame_controller_howto.md](docs/mujoco_frame_controller_howto.md)
-for running the Mujoco sim together with the `h12_ros2_controller` FrameController
-stack.
-
-### Option B: conda (legacy)
-
-- Initialize submodules:
-
-    ```bash
-    git submodule update --init --recursive
-    ```
-
-- The Unitree Python SDK is vendored as a submodule under
-  `submodules/unitree_sdk2_python` (cloned by the `git submodule update` above).
-- Install python dependencies from `environment.yml`:
-
-    ```bash
-    conda env create -f environment.yml
-    conda activate adaptive_env
-    pip install -e submodules/unitree_sdk2_python
-    pip install -e submodules/h12_ros2_controller
+    python h12_adaptive_policy/deploy/mujoco_deploy_h12_rma.py
     ```
 
 ## Files
@@ -100,7 +81,7 @@ the relay from the submodule:
 
 ```bash
 cd submodules/h12_safety_layer
-uv run h12_safety_layer/script/safety_layer_main.py --config default_safety_full.yaml
+python h12_safety_layer/script/safety_layer_main.py --config default_safety_full.yaml
 ```
 
 It clips + monitors incoming commands and republishes the filtered command to `rt/lowcmd` at 500 Hz.
