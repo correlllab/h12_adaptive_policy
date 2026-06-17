@@ -173,7 +173,7 @@ def build_et_mujoco(
 def main():
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default=os.path.join(_SCRIPT_DIR, "h1_2_rma_arm.yaml"))
+    parser.add_argument("--config", type=str, default=os.path.join(_SCRIPT_DIR, "h1_2_rma_arm_magpie_fame.yaml"))
     parser.add_argument(
         "--no_encode",
         action="store_true",

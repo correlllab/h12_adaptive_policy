@@ -241,7 +241,7 @@ def run_one_vec(config, m, robot_model, left_vec_3d, right_vec_3d, duration_s, p
 
 def main():
     parser = argparse.ArgumentParser(description="6D hand force sweep with Pinocchio force estimation")
-    parser.add_argument("--config", type=str, default=os.path.join(_SCRIPT_DIR, "h1_2_rma_arm.yaml"))
+    parser.add_argument("--config", type=str, default=os.path.join(_SCRIPT_DIR, "h1_2_rma_arm_magpie_fame.yaml"))
     parser.add_argument("--weights_dir", type=str, default=None, help="Directory with policy.pt and encoder_*.pt")
     parser.add_argument("--N", type=int, default=150, help="Number of random 6D force samples")
     parser.add_argument("--xy_max", type=float, default=20.0, help="Fx,Fy range: each in [-xy_max, xy_max] N")

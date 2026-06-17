@@ -7,7 +7,7 @@ joints and actuators.
 
 Usage:
   python inspect_mujoco_state.py
-  python inspect_mujoco_state.py --config ../deploy/h1_2_rma_arm.yaml
+  python inspect_mujoco_state.py --config ../deploy/h1_2_rma_arm_magpie_fame.yaml
   python inspect_mujoco_state.py --xml /path/to/model.xml
 """
 
@@ -183,7 +183,7 @@ def main():
         xml_path = config.get('xml_path')
     else:
         # Try default from deploy config
-        default_config = os.path.join(_REPO_ROOT, 'h12_adaptive_policy/deploy/h1_2_rma_arm.yaml')
+        default_config = os.path.join(_REPO_ROOT, 'h12_adaptive_policy/deploy/h1_2_rma_arm_magpie_fame.yaml')
         if os.path.exists(default_config):
             config = load_config(default_config)
             xml_path = config.get('xml_path')

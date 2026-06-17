@@ -1,5 +1,5 @@
-policy_path: "../../data/rma_hand/policy.pt"
-encoder_path: "../../data/rma_hand/encoder_3999.pt"
+policy_path: "../fame_policy/policy_3600.pt"
+encoder_path: "../fame_policy/encoder_3600.pt"
 xml_path: "../../h1_2/h1_2_magpie_fame.xml"
 
 # Keep RL policy interfaces fixed at H12 motor dimensions.
@@ -27,13 +27,16 @@ kds_arms: [5.0, 5.0, 5.0, 7.5, 1.0, 0.3, 0.0,
           0.0,
      5.0, 5.0, 5.0, 7.5, 1.0, 0.3, 0.0]
 
-# Default joint angles for legs
-default_angles: [-0.16, 0.0, 0.0, 0.36, -0.2, 0.0,
-                 -0.16, 0.0, 0.0, 0.36, -0.2, 0.0]
+# Default joint angles for legs (FAME step-3600 training nominal: hip_pitch bent, not hip_yaw)
+default_angles: [0.0, -0.16, 0.0, 0.36, -0.2, 0.0,
+                 0.0, -0.16, 0.0, 0.36, -0.2, 0.0]
 
-default_angles_arms: [0.0,
-                      -0.9, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0,
-                      -0.9, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0]
+# Arm/torso nominal. Index 0 = torso (waist yaw) held at -0.35 rad to match the FAME run's
+# training; arms straight down (0). Use arm_pose_presets to test other upper-body
+# configurations the RMA encoder adapts to.
+default_angles_arms: [-0.35,
+                      0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                      0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
 arm_pose_presets:
   forward_extended: [0.0,
