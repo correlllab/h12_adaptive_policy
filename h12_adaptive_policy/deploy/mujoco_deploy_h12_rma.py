@@ -23,18 +23,22 @@ _PACKAGE_DIR = os.path.abspath(os.path.join(_SCRIPT_DIR, ".."))
 if _PACKAGE_DIR not in sys.path:
     sys.path.insert(0, _PACKAGE_DIR)
 
-# h12_safety_layer lives at <repo_root>/submodules/h12_safety_layer (repo root is two
-# levels above deploy/). Add it to sys.path so we can reuse its authoritative joint
-# limits and clamp sim targets exactly as the real-robot safety relay clamps commands.
-_REPO_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, "..", ".."))
-_SAFETY_DIR = os.path.join(_REPO_ROOT, "submodules", "h12_safety_layer")
-if os.path.isdir(_SAFETY_DIR) and _SAFETY_DIR not in sys.path:
-    sys.path.insert(0, _SAFETY_DIR)
+# h12_safety_layer is installed from GitHub (pip), not vendored — see README. The sim
+# reuses its joint-position limits to clamp targets the same way the real-robot relay
+# clamps commands; we import it directly (no sys.path juggling).
 
 RMA_LATENT_DIM = 8
 RMA_ACTOR_Z_DIM = 24   # 3 * 8
 RMA_ET_DIM = 21        # 15 upper dof + left_xyz(3) + right_xyz(3), hand-only
 H12_POLICY_JOINTS = 27
+
+# The encoder was trained on hand forces of magnitude U(0, HAND_FORCE_MAG_MAX) per hand
+# (see RMA.rma_modules.env_factor_spec). Forces beyond this are out-of-distribution for the
+# encoder and degrade the latent (unseen states -> bad z_t). So the force fed into e_t is
+# clipped to this magnitude, direction preserved. The physical force applied to the sim is
+# unchanged — only what the encoder "sees" is clamped to the trained envelope.
+from RMA.rma_modules.env_factor_spec import HAND_FORCE_MAGNITUDE_RANGE as _HAND_FORCE_RANGE
+HAND_FORCE_MAG_MAX = float(_HAND_FORCE_RANGE[1])
 
 
 def load_config(config_path):
@@ -89,30 +93,44 @@ def load_safety_q_clip(sim_joint_names, safety_config=None):
     """Per-joint position clip bounds ``(low, high)`` aligned to ``sim_joint_names``.
 
     Reuses h12_safety_layer's authoritative joint-position limits so the sim clamps
-    target joint positions with the SAME bounds the real-robot safety relay enforces
-    (h12_safety_layer.core). Joints are matched by name (not by index), so any future
-    reordering of the model actuators or the safety joint list stays correct. The safety
-    JOINT_NAMES use a ``_joint`` suffix; MuJoCo joints may omit it, so we normalize.
-    Returns two float32 arrays of len(sim_joint_names).
-    """
-    from h12_safety_layer.core.joint_limits import JOINT_NAMES
-    from h12_safety_layer.core.config import load_config as load_safety_config
+    target joint positions with the SAME bounds the real-robot safety relay enforces.
+    h12_safety_layer is installed from GitHub (``pip install --no-deps
+    git+https://github.com/correlllab/h12_safety_layer.git@main``) and imported directly.
+    By default we use its URDF joint-position limits; pass a ``safety_config`` yaml path
+    to derive clipped bounds from a safety preset instead.
 
-    if safety_config is None:
-        safety_config = os.path.join(_SAFETY_DIR, "config", "default_safety_full.yaml")
-    q_clip = load_safety_config(safety_config)["limits"]["q_clip_limits"]  # (27, 2)
-    name_to_idx = {name: i for i, name in enumerate(JOINT_NAMES)}
+    Joints are matched by name (not index), so reordering the model actuators or the
+    safety joint list stays correct. The safety JOINT_NAMES use a ``_joint`` suffix;
+    MuJoCo joints may omit it, so we normalize. Returns two float32 arrays of
+    len(sim_joint_names).
+    """
+    try:
+        from h12_safety_layer.core.joint_limits import JOINT_NAMES, URDF_POSITION_LIMITS
+    except ImportError as e:
+        raise ImportError(
+            "h12_safety_layer is not installed. Install it with `pip install --no-deps "
+            "git+https://github.com/correlllab/h12_safety_layer.git@main`, or set "
+            "`safety_clip: false` in the deploy config to bypass."
+        ) from e
+
+    if safety_config is not None:
+        from h12_safety_layer.core.config import load_config as load_safety_config
+        q_clip = load_safety_config(safety_config)["limits"]["q_clip_limits"]  # (27, 2)
+        bounds = {JOINT_NAMES[i]: (float(q_clip[i, 0]), float(q_clip[i, 1])) for i in range(len(JOINT_NAMES))}
+    else:
+        bounds = {JOINT_NAMES[i]: (float(URDF_POSITION_LIMITS[i]["low"]), float(URDF_POSITION_LIMITS[i]["high"]))
+                  for i in range(len(JOINT_NAMES))}
+
     low = np.empty(len(sim_joint_names), dtype=np.float32)
     high = np.empty(len(sim_joint_names), dtype=np.float32)
     for k, sn in enumerate(sim_joint_names):
         key = sn if sn.endswith("_joint") else f"{sn}_joint"
-        if key not in name_to_idx:
+        if key not in bounds:
             raise KeyError(
                 f"Sim joint '{sn}' not found in h12_safety_layer JOINT_NAMES; "
                 "cannot build safety clip bounds (set safety_clip: false to bypass)."
             )
-        j = name_to_idx[key]
-        low[k], high[k] = q_clip[j, 0], q_clip[j, 1]
+        low[k], high[k] = bounds[key]
     return low, high
 
 
@@ -154,6 +172,21 @@ def compute_observation(d, config, action, cmd, height_cmd, n_joints, qj=None, d
     return single_obs, single_obs_dim
 
 
+def clip_hand_force_to_trained(force_xyz, max_mag=HAND_FORCE_MAG_MAX):
+    """Clip a 3D hand force to the encoder's trained magnitude (direction preserved).
+
+    Keeps the encoder input inside the distribution it was trained on
+    (magnitude U(0, max_mag)); pass ``max_mag=None`` to disable.
+    """
+    f = np.asarray(force_xyz, dtype=np.float32)
+    if max_mag is None or max_mag <= 0:
+        return f
+    n = float(np.linalg.norm(f))
+    if n > max_mag:
+        f = f * (np.float32(max_mag) / np.float32(n))
+    return f
+
+
 def build_et_mujoco(
     qpos,
     left_hand_force_xyz,
@@ -161,13 +194,21 @@ def build_et_mujoco(
     num_actions=12,
     policy_joints=H12_POLICY_JOINTS,
     qj_policy=None,
+    clip_force_mag=HAND_FORCE_MAG_MAX,
 ):
-    """e_t = 15 upper-body dof + left_xyz(3) + right_xyz(3) = 21 (hand-only, same order as Isaac build_et_from_gym)."""
+    """e_t = 15 upper-body dof + left_xyz(3) + right_xyz(3) = 21 (hand-only, same order as Isaac build_et_from_gym).
+
+    The hand-force entries are clipped to ``clip_force_mag`` (per hand, direction preserved)
+    so out-of-distribution loads do not feed the encoder unseen forces. ``clip_force_mag=None``
+    disables clipping (raw privileged force).
+    """
     if qj_policy is None:
         upper = qpos[7 + num_actions : 7 + policy_joints].copy()
     else:
         upper = qj_policy[num_actions:policy_joints].copy()
-    return np.concatenate([upper, np.asarray(left_hand_force_xyz, dtype=np.float32), np.asarray(right_hand_force_xyz, dtype=np.float32)], dtype=np.float32)
+    left = clip_hand_force_to_trained(left_hand_force_xyz, clip_force_mag)
+    right = clip_hand_force_to_trained(right_hand_force_xyz, clip_force_mag)
+    return np.concatenate([upper, left, right], dtype=np.float32)
 
 
 def main():

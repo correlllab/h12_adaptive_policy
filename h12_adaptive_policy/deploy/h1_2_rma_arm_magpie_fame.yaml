@@ -34,7 +34,7 @@ default_angles: [0.0, -0.16, 0.0, 0.36, -0.2, 0.0,
 # Arm/torso nominal. Index 0 = torso (waist yaw) held at -0.35 rad to match the FAME run's
 # training; arms straight down (0). Use arm_pose_presets to test other upper-body
 # configurations the RMA encoder adapts to.
-default_angles_arms: [-0.35,
+default_angles_arms: [-0.3,
                       0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                       0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
@@ -71,9 +71,9 @@ num_obs: 252
 obs_history_len: 3
 
 # Hand-only 3D forces (world frame).
-left_hand_force: [0.0, 10.0, -25.0]
-right_hand_force: [0.0, -1.0, -25.0]
+left_hand_force: [0.0, 0.0, 0.0]
+right_hand_force: [0.0, 0.0, 0.0]
 
 # Initial commands
 cmd_init: [0.0, 0.0, 0.0]
-height_cmd: 0.75
+height_cmd: 1.05
