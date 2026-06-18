@@ -547,7 +547,7 @@ def main():
     print(f"[IK] task={args.task} side={side} payload={payload}kg")
     for wp, r in zip(task["waypoints"], resid):
         flag = "" if r < 0.01 else "  <-- UNREACHABLE (residual high)"
-        print(f"   {wp['name']:6s} xyzsubscribe to rt/lowcmd and publish to rt/lowstate={wp['xyz']}  IK residual={r*1000:5.1f}mm{flag}")
+        print(f"   {wp['name']:6s} xyz={wp['xyz']}  IK residual={r*1000:5.1f}mm{flag}")
     xyz_at, total = build_xyz_schedule(task["waypoints"], settle_s, seg_s, hold_s)
 
     if args.view:
