@@ -21,7 +21,7 @@ Joint commands are clamped to the h12_safety_layer limits before PD control (lik
 Usage (from repo root):
   python .../sweep_rma_ablation.py --N 150 --down_hemi                       # static EE-error sweep
   python .../sweep_rma_ablation.py --dynamic --N 80 --payload_max 3.0        # dynamic base-drift sweep
-  python .../sweep_rma_ablation.py --dynamic --video figure/rma_ablation/dyn --payload_kg 2.0   # videos
+  python .../sweep_rma_ablation.py --dynamic --video simulation_exp/videos/dyn --payload_kg 2.0  # videos
 """
 
 import sys
@@ -104,11 +104,14 @@ def run_one(config, m, left_f, right_f, duration_s, policy, encoder,
             left_wrist_id, right_wrist_id, apply_forces, no_encode,
             safety_clip=False, leg_q_low=None, leg_q_high=None, upper_q_low=None, upper_q_high=None,
             dynamic=False, payload_kg=0.0, arm_freq=0.5, arm_amp=1.2,
+            pickplace=False, reach_pose=None, ee_ref_L=None, ee_ref_R=None, arms="both",
             renderer=None, cam=None, render_stride=20, vid_label=""):
     """One headless episode. Returns (metrics_dict, frames_or_None)."""
     d = mujoco.MjData(m)
     mujoco.mj_forward(m, d)
     L0 = d.xpos[left_wrist_id].copy(); R0 = d.xpos[right_wrist_id].copy()
+    if ee_ref_L is not None:  # pick-place: measure EE error vs the reach TARGET, not the t=0 pose
+        L0 = np.asarray(ee_ref_L, dtype=float); R0 = np.asarray(ee_ref_R, dtype=float)
     base0_xy = d.qpos[:2].copy()
 
     decim = config["control_decimation"]
@@ -173,6 +176,24 @@ def run_one(config, m, left_f, right_f, duration_s, policy, encoder,
             arm_cmd = arm_base.copy()
             arm_cmd[L_SHOULDER_PITCH] -= arm_amp * phase
             arm_cmd[R_SHOULDER_PITCH] -= arm_amp * phase
+        elif pickplace:
+            # quasi-static pick-place: slowly reach to the target pose, ramp the load on, hold.
+            # `arms` selects which arm(s) reach and carry the load: "left", "right", or "both".
+            rp = np.clip((t / duration_s - 0.10) / 0.35, 0.0, 1.0); rp = rp * rp * (3 - 2 * rp)  # reach
+            lr = np.clip((t / duration_s - 0.50) / 0.12, 0.0, 1.0); lr = lr * lr * (3 - 2 * lr)  # load ramp
+            reach = np.asarray(reach_pose, dtype=np.float32)
+            arm_cmd = arm_base.copy()
+            if arms in ("left", "both"):
+                arm_cmd[1:8] = arm_base[1:8] + rp * (reach[1:8] - arm_base[1:8])     # left arm joints
+            if arms in ("right", "both"):
+                arm_cmd[8:15] = arm_base[8:15] + rp * (reach[8:15] - arm_base[8:15])  # right arm joints
+            F = (lr * payload_kg) * GRAVITY  # downward weight only (slow => negligible inertial)
+            FL = F if arms in ("left", "both") else np.zeros(3)
+            FR = F if arms in ("right", "both") else np.zeros(3)
+            d.xfrc_applied[left_wrist_id, :3] = FL
+            d.xfrc_applied[right_wrist_id, :3] = FR
+            max_payload = max(max_payload, float(np.linalg.norm(F)))
+            ef_left_raw, ef_right_raw = FL.astype(np.float32), FR.astype(np.float32)
         else:
             if apply_forces:
                 d.xfrc_applied[left_wrist_id, :3] = left_f
@@ -218,9 +239,8 @@ def run_one(config, m, left_f, right_f, duration_s, policy, encoder,
 
         if renderer is not None and step % render_stride == 0:
             renderer.update_scene(d, camera=cam)
-            col = (40, 120, 255) if no_encode else (40, 200, 60)  # RGB: no-FAME orange-ish, FAME green
-            lines = [(vid_label, (255, 255, 255)),
-                     (f"t={t:4.2f}s  payload={payload_kg:.1f}kg  base drift={base_dxy*100:4.1f}cm", (255, 255, 255))]
+            l2 = f"t={t:4.2f}s  load={payload_kg:.1f}kg/hand  base drift={base_dxy*100:4.1f}cm"
+            lines = [(vid_label, (255, 255, 255)), (l2, (255, 255, 255))]
             if fell:
                 lines.append(("FELL", (255, 60, 60)))
             frames.append(overlay(renderer.render(), lines))
@@ -313,6 +333,140 @@ def record_videos(args):
     print(f"saved {sbs_path}  (no-FAME | FAME)")
 
 
+def ee_targets(m, config, reach_pose, lwid, rwid):
+    """World-frame wrist positions for the reach pose with the base at nominal stance
+    (the 'target' the hand should reach if the base never moved)."""
+    dref = mujoco.MjData(m)
+    hc = int(config.get("h12_ctrl_count", config.get("policy_num_joints", 27)))
+    jids = m.actuator_trnid[:hc, 0].astype(np.int32)
+    qadr = m.jnt_qposadr[jids].astype(np.int32)
+    lc = config["num_actions"]
+    full = np.concatenate([np.asarray(config["default_angles"], dtype=float)[:lc],
+                           np.asarray(reach_pose, dtype=float)])
+    dref.qpos[qadr] = full
+    mujoco.mj_forward(m, dref)
+    return dref.xpos[lwid].copy(), dref.xpos[rwid].copy()
+
+
+def run_pickplace(args):
+    """One pick-place demo: reach to a target pose, ramp the load on, hold. FAME vs no-FAME.
+    Headline = world-frame hand error vs the reach target during the hold (FAME keeps the base
+    steady so the hand stays on target; no-FAME drifts)."""
+    config, m, lwid, rwid, policy, encoder, bounds, apply_forces = _setup(args)
+    presets = config.get("arm_pose_presets", {})
+    if args.reach not in presets:
+        raise SystemExit(f"--reach must be one of {list(presets)}")
+    arm_base = np.asarray(config["default_angles_arms"], dtype=np.float32)
+    reach_pose = np.asarray(presets[args.reach], dtype=np.float32).copy()
+    reach_pose[0] = arm_base[0]  # keep the trained torso (waist) offset
+    eL, eR = ee_targets(m, config, reach_pose, lwid, rwid)
+    print(f"[pickplace] reach='{args.reach}'  payload={args.payload_kg}kg  "
+          f"EE target L={np.round(eL,3)} R={np.round(eR,3)}")
+    renderer = None; cam = None
+    if args.video:
+        renderer = mujoco.Renderer(m, height=args.vid_h, width=args.vid_w); cam = make_camera()
+    clips = {}
+    for lab, no_enc in CONDITIONS:
+        mt, frames = run_one(config, m, np.zeros(3), np.zeros(3), args.duration, policy, encoder,
+                             lwid, rwid, apply_forces, no_encode=no_enc, **bounds,
+                             pickplace=True, reach_pose=reach_pose, payload_kg=args.payload_kg, arms=args.arms,
+                             ee_ref_L=eL, ee_ref_R=eR, renderer=renderer, cam=cam,
+                             render_stride=args.render_stride,
+                             vid_label=f"{DISPLAY[lab]} ({args.arms} {args.reach}, {args.payload_kg}kg)")
+        clips[lab] = (mt, frames)
+        print(f"  {DISPLAY[lab]:8s} hand-vs-target(hold)={mt['ss']*100:5.1f}cm  "
+              f"base drift={mt['base_rmse']*100:5.1f}cm  tilt_max={mt['base_tilt_max']:4.1f}deg  fell={mt['fell']}")
+    if args.video:
+        import imageio
+        for lab in [c[0] for c in CONDITIONS]:
+            frames = clips[lab][1]; path = f"{args.video}_{lab}.mp4"
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            imageio.mimwrite(path, frames, fps=args.fps, codec="libx264", quality=8)
+            print(f"saved {path}  ({len(frames)} frames)")
+        ff = clips["fame"][1]; nf = clips["no_fame"][1]; n = min(len(ff), len(nf))
+        div = np.full((ff[0].shape[0], 4, 3), 255, np.uint8)
+        sbs = [np.concatenate([nf[i], div, ff[i]], axis=1) for i in range(n)]
+        sp = f"{args.video}_sidebyside.mp4"
+        imageio.mimwrite(sp, sbs, fps=args.fps, codec="libx264", quality=8)
+        renderer.close(); print(f"saved {sp}  (no-FAME | FAME)")
+
+
+ENV_CONFIGS = [("left", "Left arm"), ("right", "Right arm"), ("both", "Bimanual")]
+
+
+def run_envelope(args):
+    """Pick-place envelope: for left-arm / right-arm / bimanual, sweep payload and record the
+    base drift e_base^W (FAME's term) + falls, FAME vs no-FAME. Writes CSV and the figure."""
+    config, m, lwid, rwid, policy, encoder, bounds, apply_forces = _setup(args)
+    presets = config.get("arm_pose_presets", {})
+    if args.reach not in presets:
+        raise SystemExit(f"--reach must be one of {list(presets)}")
+    arm_base = np.asarray(config["default_angles_arms"], dtype=np.float32)
+    reach_pose = np.asarray(presets[args.reach], dtype=np.float32).copy(); reach_pose[0] = arm_base[0]
+    eL, eR = ee_targets(m, config, reach_pose, lwid, rwid)
+    payloads = np.round(np.arange(0.5, args.payload_max + 1e-6, 0.5), 2)
+    print(f"[envelope] reach='{args.reach}'  payloads {payloads[0]}..{payloads[-1]}kg  configs={[c[0] for c in ENV_CONFIGS]}")
+    rows = []
+    for arms, _ in ENV_CONFIGS:
+        for kg in payloads:
+            line = f"  {arms:5s} {kg:4.1f}kg "
+            for lab, no_enc in CONDITIONS:
+                mt, _ = run_one(config, m, np.zeros(3), np.zeros(3), args.duration, policy, encoder,
+                                lwid, rwid, apply_forces, no_encode=no_enc, **bounds,
+                                pickplace=True, reach_pose=reach_pose, payload_kg=float(kg), arms=arms,
+                                ee_ref_L=eL, ee_ref_R=eR)
+                rows.append((arms, float(kg), DISPLAY[lab], mt["base_rmse"], mt["base_tilt_max"], mt["fell"]))
+                line += f" {DISPLAY[lab]}={mt['base_rmse']*100:4.1f}cm{'(fell)' if mt['fell'] else '     '}"
+            print(line)
+    os.makedirs(os.path.dirname(args.csv) or ".", exist_ok=True)
+    with open(args.csv, "w") as f:
+        f.write("arms,payload_kg,cond,base_rmse,tilt_max,fell\n")
+        for r in rows:
+            f.write(",".join(str(v) for v in r) + "\n")
+    print(f"saved CSV -> {args.csv}")
+    plot_envelope(args.csv, args.out)
+
+
+def plot_envelope(csv_path, out_path):
+    import csv as _csv
+    from matplotlib.lines import Line2D
+    rows = list(_csv.DictReader(open(csv_path)))
+    TAU_CM = 10.0   # illustrative IK-compensable base-drift budget
+    YCAP = 25.0
+    styles = {"FAME": ("#2c7fb8", "o", "-"), "no-FAME": ("#d95f0e", "s", "--")}
+    fig, axes = plt.subplots(1, len(ENV_CONFIGS), figsize=(5.0 * len(ENV_CONFIGS), 4.8), sharey=True)
+    if len(ENV_CONFIGS) == 1:
+        axes = [axes]
+    for ax, (arms, title) in zip(axes, ENV_CONFIGS):
+        ax.axhspan(0, TAU_CM, color="#2ca02c", alpha=0.10, zorder=0)
+        for cond, (color, mk, ls) in styles.items():
+            sel = sorted([r for r in rows if r["arms"] == arms and r["cond"] == cond],
+                         key=lambda r: float(r["payload_kg"]))
+            x = [float(r["payload_kg"]) for r in sel]
+            y = [min(float(r["base_rmse"]) * 100, YCAP) for r in sel]
+            fell = [int(float(r["fell"])) for r in sel]
+            ax.plot(x, y, ls, color=color, marker=mk, ms=5, lw=2, label=cond, zorder=3)
+            xf = [xi for xi, fi in zip(x, fell) if fi]
+            ax.scatter(xf, [YCAP] * len(xf), marker="x", color="red", s=55, lw=2, zorder=4)
+        ax.set_title(title, fontsize=12)
+        ax.set_xlabel("payload per loaded hand (kg)")
+        ax.grid(alpha=0.3); ax.set_ylim(0, YCAP + 2)
+    axes[0].set_ylabel(r"base drift  $e^{W}_{base}$  (cm)")
+    axes[0].text(0.03, 0.30, "IK-compensable\n(controller closes it)", transform=axes[0].transAxes,
+                 fontsize=8.5, color="#2ca02c", va="top")
+    h, l = axes[0].get_legend_handles_labels()
+    h.append(Line2D([], [], marker="x", color="red", ls="none")); l.append("fell")
+    axes[0].legend(h, l, loc="upper left", fontsize=9)
+    fig.suptitle(
+        r"World-frame EE error   $e^{W}_{ee} = e^{W}_{base} + e^{B}_{ee}$"
+        r"       ($e^{W}_{base}$ = FAME's job · base drift,   $e^{B}_{ee}$ = upper-body controller's job)"
+        "\nFAME keeps base drift small & compensable; without it the base leaves the IK-compensable region and falls",
+        fontsize=12)
+    fig.tight_layout(rect=[0, 0, 1, 0.90])
+    fig.savefig(out_path, dpi=150)
+    print(f"saved figure -> {out_path}")
+
+
 def run_sweep(args):
     config, m, lwid, rwid, policy, encoder, bounds, apply_forces = _setup(args)
     rng = np.random.default_rng(args.seed)
@@ -401,8 +555,14 @@ def main():
     p.add_argument("--payload_kg", type=float, default=2.0, help="Fixed payload for --video")
     p.add_argument("--arm_freq", type=float, default=0.5, help="Arm raise/lower frequency (Hz)")
     p.add_argument("--arm_amp", type=float, default=1.2, help="Shoulder-pitch sweep amplitude (rad)")
+    # pick-place (one demo): reach to a pose and hold under load
+    p.add_argument("--pickplace", action="store_true", help="Quasi-static reach-and-hold-under-load demo (FAME vs no-FAME)")
+    p.add_argument("--envelope", action="store_true", help="Pick-place envelope sweep: left/right/bimanual x payload, base-drift figure")
+    p.add_argument("--arms", type=str, default="both", choices=("left", "right", "both"), help="Which arm(s) carry the load (pickplace demo)")
+    p.add_argument("--reach", type=str, default="forward_extended", help="Arm preset to reach to (from arm_pose_presets)")
+    p.add_argument("--replot", action="store_true", help="Envelope: re-plot from existing CSV without re-running sims")
     # video
-    p.add_argument("--video", type=str, default=None, help="Path prefix; records FAME/no-FAME/side-by-side mp4s (implies dynamic)")
+    p.add_argument("--video", type=str, default=None, help="Path prefix; records FAME/no-FAME/side-by-side mp4s")
     p.add_argument("--vid_w", type=int, default=640); p.add_argument("--vid_h", type=int, default=480)
     p.add_argument("--fps", type=int, default=25); p.add_argument("--render_stride", type=int, default=20)
     # outputs
@@ -410,13 +570,17 @@ def main():
     p.add_argument("--out", type=str, default=None)
     args = p.parse_args()
 
-    tag = "dyn" if args.dynamic or args.video else "static"
+    tag = "envelope" if args.envelope else ("dyn" if args.dynamic else "static")
     if args.csv is None:
-        args.csv = os.path.join(_REPO_ROOT, f"data/rma_ablation/{tag}_sweep.csv")
+        args.csv = os.path.join(_REPO_ROOT, f"simulation_exp/data/{tag}.csv")
     if args.out is None:
-        args.out = os.path.join(_REPO_ROOT, f"figure/rma_ablation/{tag}_sweep.png")
+        args.out = os.path.join(_REPO_ROOT, f"simulation_exp/figures/{tag}.png")
 
-    if args.video:
+    if args.envelope:
+        plot_envelope(args.csv, args.out) if args.replot else run_envelope(args)
+    elif args.pickplace:
+        run_pickplace(args)
+    elif args.video:
         record_videos(args)
     else:
         run_sweep(args)

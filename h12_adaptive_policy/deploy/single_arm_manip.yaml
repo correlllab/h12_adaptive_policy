@@ -1,0 +1,70 @@
+# Single-arm pick-and-place — END-EFFECTOR Cartesian targets (NOT joint angles).
+#
+# The manipulating hand follows a sequence of EE waypoints (home -> lift up -> move across ->
+# place down). These xyz are defined in the BASE frame but are mapped through the robot's NOMINAL
+# base pose into a target FIXED IN THE WORLD. h12_ros2_controller's velocity IK (Pink) tracks that
+# world target CLOSED-LOOP: every control tick it re-expresses the target in the current (measured)
+# base frame and re-solves, so the arm actively compensates base motion to hold the hand on the
+# world target. The leg policy (FAME) keeps the base steady so the disturbance the IK must reject
+# stays small. The other arm hangs at `arm_down`.
+#
+# Metrics:  e^W_ee = hand vs world target (after control);  e^W_base = base motion propagated to
+# the hand (the disturbance the IK rejects). FAME shrinks e^W_base; the IK drives e^W_ee toward 0.
+#
+# ---------------------------------------------------------------------------------------------
+# EE frame tracked: <hand>_wrist_yaw_link   (right_wrist_yaw_link / left_wrist_yaw_link)
+# Base-frame axes (meters):   x = forward(+) ,   y = left(+) ,   z = up(+)
+# Orientation: roll/pitch/yaw in DEGREES (only used if track_orientation: true)
+#
+# Nominal hand position with arms_down (base frame, FK-verified):
+#   torso =  0.00 (facing forward):  right ≈ [ 0.048, -0.224, -0.025]   left ≈ [0.048, 0.224, -0.025]
+#   torso = -0.35 (FAME nominal):    right ≈ [-0.031, -0.227, -0.025]   left ≈ [0.122, 0.193, -0.025]
+# NOTE: FAME's policy was trained with torso = -0.35 (keeps its observation in-distribution), but
+# that waist-yaw turns the upper body so the base-frame hands are asymmetric. Pick torso below and
+# define your xyz targets in that frame. Stay within reach (~0.0–0.45 m forward, |y|<~0.35, z∈[-0.3,0.4]).
+# The xyz/rpy values below are EXAMPLES — tune them.
+# ---------------------------------------------------------------------------------------------
+
+ee_frame:
+  right: right_wrist_yaw_link
+  left:  left_wrist_yaw_link
+
+torso: -0.35                                   # waist yaw: -0.35 = FAME nominal, 0.0 = face forward
+# "arms down" nominal (same as gym): shoulder_pitch 0.4 rad (~23 deg), elbow 0.3 rad (~14 deg)
+arm_down: [0.4, 0.0, 0.0, 0.3, 0.0, 0.0, 0.0]  # passive (non-manip) arm joints (7)
+
+# Trajectory timing (slow / quasi-static)
+seg_time_s: 1.5        # seconds to move between consecutive EE waypoints
+hold_s: 0.8            # seconds to hold at each waypoint
+load_ramp_s: 0.8       # seconds to ramp the payload on at the start ("grasp")
+
+# IK weighting
+position_cost: 50.0
+orientation_cost: 0.0   # 0 = position-only IK; raise (e.g. 10) to also track rpy
+track_orientation: false
+
+# =============================================================================================
+# RIGHT-HAND manipulation:  RIGHT hand carries the load; LEFT arm = arm_down
+# EE path: home (front) -> lift UP -> move LEFT (across) -> place DOWN
+# =============================================================================================
+right_hand_manip:
+  payload_kg: 1.0
+  manip: right
+  waypoints:   # (right arm reaches OUT to the right; reachable examples — tune freely)
+    - {name: home,  xyz: [0.25, -0.20, 0.05], rpy: [0, 0, 0]}   # hold load at the side
+    - {name: lift,  xyz: [0.25, -0.20, 0.25], rpy: [0, 0, 0]}   # straight up
+    - {name: right, xyz: [0.15, -0.38, 0.18], rpy: [0, 0, 0]}   # out to the right (abduct)
+    - {name: place, xyz: [0.18, -0.35, 0.02], rpy: [0, 0, 0]}   # lower / place at the right
+
+# =============================================================================================
+# LEFT-HAND manipulation:  LEFT hand carries the load; RIGHT arm = arm_down   (mirror)
+# EE path: home -> lift UP -> move RIGHT (across) -> place DOWN
+# =============================================================================================
+left_hand_manip:
+  payload_kg: 1.0
+  manip: left
+  waypoints:   # (mirror of right-hand; reachable examples — tune freely)
+    - {name: home,  xyz: [0.25,  0.20, 0.05], rpy: [0, 0, 0]}
+    - {name: lift,  xyz: [0.30,  0.15, 0.22], rpy: [0, 0, 0]}
+    - {name: right, xyz: [0.25,  0.05, 0.20], rpy: [0, 0, 0]}
+    - {name: place, xyz: [0.28,  0.08, 0.08], rpy: [0, 0, 0]}
