@@ -113,7 +113,55 @@ def plot_summary(results, payloads, task, out_path):
     print(f"saved figure -> {out_path}")
 
 
-def plot_adapt(trajs, step_times, task, out_path, trained_limit_kg=3.06):
+def plot_summary_multiseed(results, payloads, task, out_path):
+    """Multi-seed payload sweep: mean ± std error bars across seeds, FAME vs no-FAME.
+
+    ``results = {"FAME": [seeds_list_per_payload], "no-FAME": [...]}``
+    where each ``seeds_list_per_payload`` is a list of metric dicts (one per seed,
+    same payload). Metric keys used: ``ee_rmse``, ``ee_b_rmse``, ``base_rmse``,
+    ``fell``. Red ✕ marks payloads where any seed fell (fraction shown above).
+    """
+    fig, axes = plt.subplots(1, 3, figsize=(14, 4.4))
+    styles = {"FAME": (_FAME_COLOR, "o", "-"), "no-FAME": (_NO_FAME_COLOR, "s", "--")}
+    panels = [
+        (axes[0], "ee_rmse",   r"world tracking error  $e^W_{ee}$  (after control)"),
+        (axes[1], "ee_b_rmse", r"base disturbance at hand  $e^W_{base}$  (IK rejects this)"),
+        (axes[2], "base_rmse", "pelvis drift (horizontal)"),
+    ]
+    n_seeds = max(len(results["FAME"][0]), len(results["no-FAME"][0]))
+    for ax, key, title in panels:
+        for lab, (c, mk, ls) in styles.items():
+            means = np.array([np.mean([m[key] * 100 for m in seeds_list])
+                              for seeds_list in results[lab]])
+            stds = np.array([np.std([m[key] * 100 for m in seeds_list])
+                             for seeds_list in results[lab]])
+            ax.errorbar(payloads, means, yerr=stds, fmt=mk, ls=ls, color=c, label=lab,
+                        capsize=4, lw=1.6, ms=5, elinewidth=1.2)
+            ax.fill_between(payloads, means - stds, means + stds, color=c, alpha=0.12)
+            # Mark falls (any seed fell at this payload)
+            fall_rates = [np.mean([m["fell"] for m in sl]) for sl in results[lab]]
+            xf = [(p, fr) for p, fr in zip(payloads, fall_rates) if fr > 0]
+            if xf:
+                y_top = (means + stds).max()
+                for px, fr in xf:
+                    ax.scatter([px], [y_top], marker="x", color="red", s=55, zorder=5)
+                    ax.annotate(f"{int(round(fr * 100))}%", (px, y_top),
+                                xytext=(0, 6), textcoords="offset points",
+                                fontsize=8, color="red", ha="center")
+        ax.set_xlabel("payload (kg)"); ax.set_ylabel("cm"); ax.set_title(title)
+        ax.grid(alpha=.3); ax.legend(fontsize=8)
+    fig.suptitle(
+        f"{task}: closed-loop world-frame tracking vs payload — FAME shrinks the disturbance "
+        f"the IK must reject  (n={n_seeds} seeds, mean ± std)",
+        fontsize=12,
+    )
+    fig.tight_layout(rect=[0, 0, 1, 0.92])
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"saved figure -> {out_path}")
+
+
+def plot_adapt(trajs, step_times, task, out_path):
     """Time series under an ON-THE-FLY changing payload: FAME (force encoder, adapts)
     vs no-FAME (blind). Vertical purple lines mark sudden load changes.
 
@@ -128,8 +176,6 @@ def plot_adapt(trajs, step_times, task, out_path, trained_limit_kg=3.06):
 
     axes[0].plot(t, fame["load"], "k-", lw=2)
     axes[0].set_ylabel("payload (kg)")
-    axes[0].axhline(trained_limit_kg, color="gray", ls=":", lw=1)
-    axes[0].text(t[2], trained_limit_kg + 0.04, "30 N trained limit", fontsize=8, color="gray")
     axes[0].set_title(
         f"{task}: payload changed ON THE FLY while moving — FAME adapts (force encoder) vs no-FAME (blind)"
     )
@@ -142,6 +188,164 @@ def plot_adapt(trajs, step_times, task, out_path, trained_limit_kg=3.06):
     for ax, fn, ylab in [(axes[2], werr, "world EE error (cm)"), (axes[3], drift, "pelvis drift (cm)")]:
         ax.plot(t, fn(fame), color=_FAME_COLOR, lw=1.7, label="FAME (adapts)")
         ax.plot(t, fn(nof), color=_NO_FAME_COLOR, ls="--", lw=1.7, label="no-FAME (blind)")
+        ax.set_ylabel(ylab)
+        ax.legend(fontsize=9, loc="upper left")
+    axes[3].set_xlabel("t (s)")
+
+    for ax in axes:
+        for s in step_times:
+            ax.axvline(s, color="purple", ls=":", lw=1.2, alpha=0.6)
+        ax.grid(alpha=.3)
+
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"saved figure -> {out_path}")
+
+
+def plot_carry_summary_multiseed(results, payloads, out_path):
+    """Bimanual-carry payload sweep: pelvis drift + max tilt vs payload per hand,
+    FAME vs no-FAME, with mean ± std error bars across seeds.
+
+    ``results = {"FAME": [[m_seed0, m_seed1, ...], ...], "no-FAME": [...]}`` indexed
+    by payload. Each metric dict has ``base_rmse`` (m), ``tilt_max`` (deg), ``fell``.
+    Red ✕ marks payloads where any seed fell (fraction shown above).
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4.4))
+    styles = {"FAME": (_FAME_COLOR, "o", "-"), "no-FAME": (_NO_FAME_COLOR, "s", "--")}
+    # (axis, metric_key, ylabel, scale_to_display_units)
+    panels = [
+        (axes[0], "base_rmse", "pelvis drift  (cm)", 100.0),
+        (axes[1], "tilt_max",  "max tilt  (deg)",    1.0),
+    ]
+    n_seeds = max(len(results["FAME"][0]), len(results["no-FAME"][0]))
+    for ax, key, ylab, scale in panels:
+        for lab, (c, mk, ls) in styles.items():
+            means = np.array([np.mean([m[key] * scale for m in seeds_list])
+                              for seeds_list in results[lab]])
+            stds = np.array([np.std([m[key] * scale for m in seeds_list])
+                             for seeds_list in results[lab]])
+            ax.errorbar(payloads, means, yerr=stds, fmt=mk, ls=ls, color=c, label=lab,
+                        capsize=4, lw=1.6, ms=5, elinewidth=1.2)
+            ax.fill_between(payloads, means - stds, means + stds, color=c, alpha=0.12)
+            # Fall markers
+            fall_rates = [np.mean([m["fell"] for m in sl]) for sl in results[lab]]
+            xf = [(p, fr) for p, fr in zip(payloads, fall_rates) if fr > 0]
+            if xf:
+                y_top = (means + stds).max()
+                for px, fr in xf:
+                    ax.scatter([px], [y_top], marker="x", color="red", s=55, zorder=5)
+                    ax.annotate(f"{int(round(fr * 100))}%", (px, y_top),
+                                xytext=(0, 6), textcoords="offset points",
+                                fontsize=8, color="red", ha="center")
+        ax.set_xlabel("payload per hand (kg)")
+        ax.set_ylabel(ylab)
+        ax.grid(alpha=.3); ax.legend(fontsize=8)
+    fig.suptitle(
+        f"bimanual_carry: pelvis drift & max tilt vs payload — FAME vs no-FAME  "
+        f"(n={n_seeds} seeds, mean ± std)",
+        fontsize=12,
+    )
+    fig.tight_layout(rect=[0, 0, 1, 0.92])
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"saved figure -> {out_path}")
+
+
+def plot_carry_compare(trajs, drop_at_s, torso_schedule, out_path):
+    """Bimanual-carry comparison: FAME vs no-FAME over the carry + torso-sweep + drop run.
+
+    Stacks four time-series panels:
+      1. torso angle (commanded — shared between conditions)
+      2. payload (kg) — shows the load ramp and drop event
+      3. encoder latent ||z|| — FAME vs no-FAME
+      4. pelvis drift (xy) — the headline metric
+
+    ``trajs`` = {"FAME": traj_dict, "no-FAME": traj_dict}. Vertical markers:
+      * blue dashed = torso schedule keyframes (turn start, hold, return)
+      * red dotted = drop event
+    """
+    fame, nof = trajs["FAME"], trajs["no-FAME"]
+    t = fame["t"]
+    drift = lambda tr: np.linalg.norm(tr["bpos"][:, :2] - tr["bpos"][0, :2], axis=1) * 100
+
+    fig, axes = plt.subplots(4, 1, figsize=(12, 11), sharex=True)
+
+    # Panel 1 — torso angle
+    axes[0].plot(t, np.degrees(fame["torso_cmd"]), "k-", lw=2, label="commanded")
+    axes[0].plot(t, np.degrees(fame["torso_actual"]), color=_FAME_COLOR, lw=1.2, alpha=0.85,
+                 label="FAME actual")
+    axes[0].plot(t, np.degrees(nof["torso_actual"]), color=_NO_FAME_COLOR, ls="--", lw=1.2,
+                 alpha=0.85, label="no-FAME actual")
+    axes[0].set_ylabel("torso yaw (deg)")
+    torso_angles_deg = np.degrees([float(k[1]) for k in torso_schedule])
+    sweep_amp_deg = float(torso_angles_deg.max() - torso_angles_deg.min())
+    axes[0].set_title(
+        f"bimanual_carry: torso {sweep_amp_deg:.0f}° sweep + drop — FAME vs no-FAME"
+    )
+    axes[0].legend(fontsize=9, loc="upper left")
+
+    # Panel 2 — force per hand (Newtons). Clipping to the encoder's trained envelope
+    # still happens inside build_et_mujoco; we just don't annotate the limit here.
+    force_N = np.asarray(fame["load"]) * 9.81
+    axes[1].plot(t, force_N, "k-", lw=2)
+    axes[1].set_ylabel("force per hand (N)")
+
+    # Panel 3 — encoder ||z||
+    axes[2].plot(t, fame["z"], color=_FAME_COLOR, lw=1.7, label="FAME (force encoder)")
+    axes[2].plot(t, nof["z"], color=_NO_FAME_COLOR, ls="--", lw=1.7, label="no-FAME (blind)")
+    axes[2].set_ylabel(r"encoder latent $\|z\|$")
+    axes[2].legend(fontsize=9, loc="upper left")
+
+    # Panel 4 — pelvis drift (headline)
+    fame_drift = drift(fame); nof_drift = drift(nof)
+    axes[3].plot(t, fame_drift, color=_FAME_COLOR, lw=2,
+                 label=f"FAME (rmse {np.sqrt(np.mean(fame_drift ** 2)):.2f} cm)")
+    axes[3].plot(t, nof_drift, color=_NO_FAME_COLOR, ls="--", lw=2,
+                 label=f"no-FAME (rmse {np.sqrt(np.mean(nof_drift ** 2)):.2f} cm)")
+    axes[3].set_ylabel("pelvis drift  (cm)")
+    axes[3].set_xlabel("t (s)")
+    axes[3].legend(fontsize=9, loc="upper left")
+
+    # Vertical guides: torso schedule keyframes (skip the first 0.0) + drop event
+    torso_t = [float(k[0]) for k in torso_schedule[1:]]
+    for ax in axes:
+        for tt in torso_t:
+            ax.axvline(tt, color="navy", ls="--", lw=0.8, alpha=0.4)
+        ax.axvline(drop_at_s, color="red", ls=":", lw=1.2, alpha=0.7)
+        ax.grid(alpha=0.3)
+    axes[0].text(drop_at_s, axes[0].get_ylim()[1], "  drop",
+                 fontsize=9, color="red", va="top")
+
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"saved figure -> {out_path}")
+
+
+def plot_adapt_single(traj, step_times, task, out_path, cond_label="FAME"):
+    """Single-condition variant of ``plot_adapt`` for when only one run is available
+    (e.g., the DDS demo, where we can't reset the sim between conditions in one
+    process). Same 4 panels but only one trace per panel.
+    """
+    color = _FAME_COLOR if cond_label.upper().startswith("FAME") else _NO_FAME_COLOR
+    t = traj["t"]
+    werr = np.linalg.norm(traj["world"] - traj["cmd_world"], axis=1) * 100
+    drift = np.linalg.norm(traj["bpos"][:, :2] - traj["bpos"][0, :2], axis=1) * 100
+
+    fig, axes = plt.subplots(4, 1, figsize=(12, 10.5), sharex=True)
+
+    axes[0].plot(t, traj["load"], "k-", lw=2)
+    axes[0].set_ylabel("payload (kg)")
+    axes[0].set_title(f"{task}: payload changed ON THE FLY while moving — {cond_label}")
+
+    axes[1].plot(t, traj["z"], color=color, lw=1.7, label=cond_label)
+    axes[1].set_ylabel(r"encoder latent $\|z\|$")
+    axes[1].legend(fontsize=9, loc="upper left")
+
+    for ax, y, ylab in [(axes[2], werr, "world EE error (cm)"),
+                        (axes[3], drift, "pelvis drift (cm)")]:
+        ax.plot(t, y, color=color, lw=1.7, label=cond_label)
         ax.set_ylabel(ylab)
         ax.legend(fontsize=9, loc="upper left")
     axes[3].set_xlabel("t (s)")

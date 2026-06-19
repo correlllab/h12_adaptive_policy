@@ -1,0 +1,59 @@
+# Bimanual carry + 90° torso rotation + drop
+#
+# Both hands hold a payload (each hand carries `payload_kg` independently). The arms are held at
+# a FIXED base-frame carry pose throughout — they don't track waypoints. The torso joint sweeps a
+# time-varying schedule (rotate 90° → hold → rotate back). At `drop_at_s`, the payload force
+# suddenly goes to zero (object released).
+#
+# Disturbances on the pelvis during the run:
+#   1. Sustained symmetric mass on the upper body (training-distribution force)
+#   2. Angular-momentum coupling from the torso yaw sweep (encoder doesn't see this directly)
+#   3. Sudden mass loss at drop (negative transient adaptation test)
+#
+# Plotted metrics (time series, FAME vs no-FAME):
+#   - torso angle (commanded)
+#   - payload (kg) per hand
+#   - encoder latent ||z||
+#   - pelvis drift (xy)
+
+ee_frame:
+  right: right_wrist_yaw_link
+  left:  left_wrist_yaw_link
+
+# Nominal arm pose (used for IK init / locked joints in the reduced model)
+arm_down: [0.4, 0.0, 0.0, 0.3, 0.0, 0.0, 0.0]
+
+# IK weighting
+position_cost: 50.0
+orientation_cost: 0.0
+track_orientation: false
+
+# Payload timing
+load_ramp_s: 0.8        # ramp the load ON at start of the trajectory
+drop_ramp_s: 0.15       # how fast the drop happens (short = more sudden)
+
+# =============================================================================================
+# BIMANUAL CARRY task
+# =============================================================================================
+bimanual_carry:
+  manip: both
+  payload_kg: 2.0         # per hand (total = 4 kg). 20 N per hand → still in encoder range (≤30 N).
+
+  # Carry pose held by BOTH hands (base/pelvis frame; with torso turning, hands sweep with body)
+  carry_pose:
+    left:  [0.30,  0.15, 0.05]
+    right: [0.30, -0.15, 0.05]
+
+  # Torso (waist yaw) schedule — (t_s, angle_rad) keyframes; smoothstep-interpolated.
+  # Start at FAME nominal (-0.35), sweep slowly to +45° (≈0.435 rad), hold, return.
+  # Smaller angle + slower sweep keeps the pelvis-angular disturbance manageable for FAME,
+  # which was trained with a fixed torso. Tune up once stable.
+  torso_schedule:
+    - [0.0,  -0.35]   # FAME nominal
+    - [3.0,  -0.35]   # settle phase (no turn yet)
+    - [7.0,   0.44]   # turn complete (~45° rotation from nominal)
+    - [10.0,  0.44]   # hold
+    - [14.0, -0.35]   # rotate back
+
+  drop_at_s: 12.0       # payload F -> 0 at this time (sudden drop, during return sweep)
+  total_s: 16.0

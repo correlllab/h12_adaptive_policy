@@ -68,7 +68,8 @@ def solve_arm_waypoints(rm, side, arm_down, torso, waypoints, orientation_cost=0
         ft.set_target(pin.SE3(R, np.asarray(wp["xyz"], float)))
         pt.set_target(cfg.q)
         for _ in range(max_iters):
-            cfg.integrate_inplace(pink.solve_ik(cfg, [ft, pt], dt=dt, solver=solver), dt)
+            cfg.integrate_inplace(
+                pink.solve_ik(cfg, [ft, pt], dt=dt, solver=solver, safety_break=False), dt)
             if np.linalg.norm(ft.compute_error(cfg)[:3]) < tol_m:
                 break
         sols.append(cfg.q.copy())
@@ -98,7 +99,12 @@ class ArmIK:
     def step(self, base_target, dt):
         self.ft.set_target(pin.SE3(np.eye(3), np.asarray(base_target, float)))
         self.pt.set_target(self.cfg.q)
-        vel = pink.solve_ik(self.cfg, [self.ft, self.pt], dt=dt, solver=self.solver)
+        # safety_break=False so that sub-microradian numerical excursions past joint
+        # limits (~1e-6 rad) don't raise NotWithinConfigurationLimits; Pink clamps
+        # instead. The downstream h12_safety_layer clip on the PD target enforces
+        # the real safety envelope.
+        vel = pink.solve_ik(self.cfg, [self.ft, self.pt], dt=dt, solver=self.solver,
+                            safety_break=False)
         self.cfg.integrate_inplace(vel, dt)
         return self.cfg.q.copy()
 

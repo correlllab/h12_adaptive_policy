@@ -66,7 +66,7 @@ from h12_ros2_controller.core.robot_model import RobotModel
 from utils import (
     quat2R, smoothstep,
     ArmIK, solve_arm_waypoints, build_xyz_schedule, build_payload_profile, ARM_SLICE,
-    plot_traj, plot_summary, plot_adapt,
+    plot_traj, plot_summary, plot_adapt, plot_adapt_single,
 )
 
 # Topic names (must match h1_mujoco/unitree_interface.py)
@@ -251,8 +251,6 @@ def run_manip_dds(state, publisher, cmd_msg, crc_obj, config, rm, policy, encode
     while time.time() < settle_end:
         state.new_state_event.wait(0.1); state.new_state_event.clear()
         st = state.snapshot()
-        # Hold current pose with config-defined kp/kd (read just below). For now use
-        # modest stiffness so the robot doesn't ragdoll.
         fill_low_cmd(cmd_msg, q_des=st["q"], dq_des=0.0, kp=80.0, kd=2.0, tau=0.0)
         send_cmd(publisher, cmd_msg, crc_obj)
 
@@ -470,6 +468,15 @@ def main():
     p.add_argument("--payload_kg", type=float, default=None, help="Override YAML payload")
     p.add_argument("--no_encode", action="store_true",
                    help="Zero the encoder force input (the 'no-FAME' condition)")
+    p.add_argument("--adapt", action="store_true",
+                   help="Apply an on-the-fly payload schedule (sudden steps in 0-3 kg). "
+                        "Saves a single-condition adapt plot at task end.")
+    p.add_argument("--save_plot", default=None,
+                   help="Path for the adapt plot PNG. Defaults to "
+                        "simulation_exp/figures/manip_{side}_adapt_dds_{cond}.png.")
+    p.add_argument("--save_traj", default=None,
+                   help="Path to write the run's traj dict as .npz "
+                        "(for later use with deploy/compare_plot_dds.py).")
     p.add_argument("--net", default=None,
                    help="DDS network interface (default: SDK picks one; 'lo' for local sim)")
     p.add_argument("--dds_id", type=int, default=0)
@@ -530,17 +537,61 @@ def main():
     publisher.Init()
     crc_obj = CRC()
 
+    # ── Optional: on-the-fly payload schedule (--adapt) ──
+    payload_at = None
+    step_times = None
+    if args.adapt:
+        payload_at, step_times = build_payload_profile(settle_s)
+        print(f"[adapt] on-the-fly payload steps at t={[round(s, 1) for s in step_times]}s "
+              f"(within 0-3kg / 30 N trained limit)")
+
     # ── Run ──
-    print(f"\n================ {args.task}: FAME{'(no_encode)' if args.no_encode else ''}  payload={payload}kg ================")
-    label = f"{'no-FAME' if args.no_encode else 'FAME'} ({args.task}, {payload}kg)"
+    cond = "no-FAME" if args.no_encode else "FAME"
+    print(f"\n================ {args.task}: {cond}  payload={payload}kg "
+          f"{'(adapt)' if args.adapt else ''} ================")
+    label = f"{cond} ({args.task}, {payload}kg)"
+    task_metrics = None
     try:
-        run_manip_dds(state, publisher, cmd_msg, crc_obj, config, rm, policy, encoder,
-                      side=side, xyz_at=xyz_at, total_s=total, payload_kg=payload,
-                      settle_s=settle_s, load_ramp_s=ramp_s, torso=torso,
-                      no_encode=args.no_encode, label=label)
+        task_metrics = run_manip_dds(
+            state, publisher, cmd_msg, crc_obj, config, rm, policy, encoder,
+            side=side, xyz_at=xyz_at, total_s=total, payload_kg=payload,
+            settle_s=settle_s, load_ramp_s=ramp_s, torso=torso,
+            no_encode=args.no_encode, payload_at=payload_at, label=label,
+        )
     except KeyboardInterrupt:
         print("\n[ctrl] interrupted during task")
     finally:
+        # Save the adapt plot before the soft-damping exit (we have task_metrics["traj"]).
+        if args.adapt and task_metrics is not None and len(task_metrics["traj"]["t"]) > 0:
+            out_path = args.save_plot or os.path.join(
+                _REPO_ROOT, "simulation_exp", "figures",
+                f"manip_{side}_adapt_dds_{cond.replace('-', '_').lower()}.png",
+            )
+            os.makedirs(os.path.dirname(out_path), exist_ok=True)
+            plot_adapt_single(task_metrics["traj"], step_times, args.task, out_path,
+                              cond_label=cond)
+        # Save the traj as .npz (for offline FAME-vs-no-FAME comparison via
+        # deploy/compare_plot_dds.py). Also stash a few task-level scalars.
+        if args.save_traj and task_metrics is not None and len(task_metrics["traj"]["t"]) > 0:
+            os.makedirs(os.path.dirname(os.path.abspath(args.save_traj)) or ".",
+                        exist_ok=True)
+            np.savez(
+                args.save_traj,
+                **task_metrics["traj"],
+                cond=cond,
+                task=args.task,
+                payload_kg=float(payload),
+                adapt=bool(args.adapt),
+                step_times=np.asarray(step_times if step_times is not None else [],
+                                      dtype=np.float64),
+                ee_rmse=task_metrics["ee_rmse"],
+                ee_max=task_metrics["ee_max"],
+                ee_b_rmse=task_metrics["ee_b_rmse"],
+                base_rmse=task_metrics["base_rmse"],
+                tilt_max=task_metrics["tilt_max"],
+                fell=task_metrics["fell"],
+            )
+            print(f"saved traj -> {args.save_traj}")
         print("[ctrl] shutting down (soft damping)")
         shutdown_soft(state, publisher, cmd_msg, crc_obj)
 

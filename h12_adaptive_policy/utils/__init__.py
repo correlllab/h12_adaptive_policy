@@ -20,7 +20,10 @@ from .recording import (
     add_force_arrow, add_marker, add_error_line,
     save_mp4, save_sidebyside_mp4, sidebyside_frames,
 )
-from .plotting import plot_traj, plot_summary, plot_adapt
+from .plotting import (
+    plot_traj, plot_summary, plot_summary_multiseed, plot_adapt, plot_adapt_single,
+    plot_carry_compare, plot_carry_summary_multiseed,
+)
 
 __all__ = [
     "quat2R", "smoothstep",
@@ -29,5 +32,6 @@ __all__ = [
     "make_manip_camera", "overlay_text",
     "add_force_arrow", "add_marker", "add_error_line",
     "save_mp4", "save_sidebyside_mp4", "sidebyside_frames",
-    "plot_traj", "plot_summary", "plot_adapt",
+    "plot_traj", "plot_summary", "plot_summary_multiseed", "plot_adapt", "plot_adapt_single",
+    "plot_carry_compare", "plot_carry_summary_multiseed",
 ]
