@@ -251,9 +251,22 @@ def build_carry_payload(payload_kg, settle_s, load_ramp_s, drop_at_s, drop_ramp_
     return at
 
 
+def _status_color(tilt_deg, fell):
+    """Traffic-light color for the torso 'health' marker drawn on rendered frames.
+    Green (stable) → yellow (tilt > half-threshold) → orange → red (fell)."""
+    if fell:
+        return (1.0, 0.1, 0.1, 1.0)
+    if tilt_deg > TILT_DEG_THRESHOLD:
+        return (1.0, 0.3, 0.1, 1.0)
+    if tilt_deg > TILT_DEG_THRESHOLD * 0.5:
+        return (1.0, 0.85, 0.1, 1.0)
+    return (0.1, 1.0, 0.2, 1.0)
+
+
 def run_carry(config, m, ids, policy, encoder, bounds, *, rm,
               torso_at, payload_at, total_s, left_arm_q, right_arm_q,
-              no_encode, label="", seed=None, init_jitter=0.01, live_view=False):
+              no_encode, label="", seed=None, init_jitter=0.01, live_view=False,
+              renderer=None, cam=None, render_stride=20):
     """One bimanual-carry episode.
 
     The arms are held at FIXED joint angles (the IK solution for the carry pose at the
@@ -261,6 +274,8 @@ def run_carry(config, m, ids, policy, encoder, bounds, *, rm,
     tracks ``torso_at(t)``; payload tracks ``payload_at(t)``; FAME's leg policy keeps the
     pelvis stable. Set ``no_encode=True`` to zero the encoder's force input (no-FAME).
     Set ``live_view=True`` to open a passive MuJoCo viewer at real-time speed.
+    Pass ``renderer``+``cam`` to record offscreen frames (force arrows on hands +
+    color-coded status ball above the torso); returned in ``metrics["frames"]``.
     """
     import collections
     import time as _time
@@ -310,8 +325,11 @@ def run_carry(config, m, ids, policy, encoder, bounds, *, rm,
         viewer = _mjv.launch_passive(m, d)
         print(f"[carry] live viewer open — close window to abort  ({label})")
 
-    # End-effector body ids for force-arrow rendering (red arrows = payload weight).
+    # End-effector body ids for force-arrow rendering (red arrows = payload weight)
+    # and torso body id for the status-ball marker.
     leid = ids["left_ee"]; reid = ids["right_ee"]
+    torso_bid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "torso_link")
+    frames = [] if renderer is not None else None
 
     for step in range(n_steps):
         _t0 = _time.time()
@@ -385,6 +403,21 @@ def run_carry(config, m, ids, policy, encoder, bounds, *, rm,
             action = policy(torch.from_numpy(actor_obs).unsqueeze(0)).detach().numpy().squeeze()
             target_dof_pos = action * config["action_scale"] + config["default_angles"]
 
+        # Offscreen render path (for sweep_video). Same scene markers as the live view:
+        # force arrows on both hands + a color-coded status ball above the torso.
+        if renderer is not None and step % render_stride == 0:
+            renderer.update_scene(d, camera=cam)
+            add_force_arrow(renderer.scene, d.xpos[leid], F)
+            add_force_arrow(renderer.scene, d.xpos[reid], F)
+            ball_pos = d.xpos[torso_bid] + np.array([0.0, 0.0, 0.65])
+            add_marker(renderer.scene, ball_pos, radius=0.06,
+                       rgba=_status_color(tilt, fell))
+            l2 = f"t={t:4.1f}s  load={kg_now:.1f}kg/hand  tilt={tilt:4.1f}°"
+            lines = [(label, (255, 255, 255)), (l2, (255, 255, 255))]
+            if fell:
+                lines.append(("FELL", (255, 60, 60)))
+            frames.append(overlay_text(renderer.render(), lines))
+
         if viewer is not None:
             if not viewer.is_running():
                 break
@@ -393,6 +426,9 @@ def run_carry(config, m, ids, policy, encoder, bounds, *, rm,
             viewer.user_scn.ngeom = 0
             add_force_arrow(viewer.user_scn, d.xpos[leid], F)
             add_force_arrow(viewer.user_scn, d.xpos[reid], F)
+            ball_pos = d.xpos[torso_bid] + np.array([0.0, 0.0, 0.65])
+            add_marker(viewer.user_scn, ball_pos, radius=0.06,
+                       rgba=_status_color(tilt, fell))
             viewer.sync()
             _rem = dt - (_time.time() - _t0)
             if _rem > 0:
@@ -406,6 +442,7 @@ def run_carry(config, m, ids, policy, encoder, bounds, *, rm,
         "base_rmse": float(np.sqrt(ssq_base / max(1, nacc))),
         "tilt_max": max_tilt,
         "fell": int(fell),
+        "frames": frames,
         "traj": traj,
     }
 
@@ -454,6 +491,40 @@ def run_bimanual_carry(args, mc, task, config, m, ids, policy, encoder, bounds,
                        live_view=True)
         print(f"  {args.view_cond:8s} pelvis drift rmse={mt['base_rmse'] * 100:5.2f} cm   "
               f"max tilt={mt['tilt_max']:5.1f}°   fell={mt['fell']}")
+        return
+
+    # --- Side-by-side payload-sweep video: FAME | no-FAME stepping through payloads. ---
+    if args.sweep_video:
+        viddir = os.path.join(_REPO_ROOT, "simulation_exp/videos")
+        os.makedirs(viddir, exist_ok=True)
+        payloads_per_hand = list(range(3, 11))   # 3-10 kg/hand
+        renderer = mujoco.Renderer(m, height=args.vid_h, width=args.vid_w)
+        cam = make_manip_camera()
+        all_sbs = []
+        print(f"\n[bimanual sweep_video] payloads {payloads_per_hand} kg/hand "
+              f"— FAME (left) | no-FAME (right)")
+        for kg_per_hand in payloads_per_hand:
+            payload_at_kg = build_carry_payload(float(kg_per_hand), settle_s,
+                                                load_ramp_s, drop_at_s, drop_ramp_s)
+            clips = {}
+            for lab, no_enc in [("FAME", False), ("no-FAME", True)]:
+                mt = run_carry(config, m, ids, policy, encoder, bounds, rm=rm,
+                               torso_at=torso_at, payload_at=payload_at_kg,
+                               total_s=total_s,
+                               left_arm_q=left_arm_q, right_arm_q=right_arm_q,
+                               no_encode=no_enc,
+                               renderer=renderer, cam=cam,
+                               render_stride=args.render_stride,
+                               label=f"{lab}  {kg_per_hand}kg/hand")
+                clips[lab] = mt["frames"]
+                print(f"  {kg_per_hand}kg/hand {lab:8s} "
+                      f"drift={mt['base_rmse']*100:5.1f}cm  "
+                      f"tilt={mt['tilt_max']:5.1f}°  fell={mt['fell']}")
+            all_sbs.extend(sidebyside_frames(clips["FAME"], clips["no-FAME"]))
+        renderer.close()
+        out_path = os.path.join(viddir, "bimanual_carry_sweep_sidebyside.mp4")
+        save_mp4(out_path, all_sbs, fps=args.fps)
+        print(f"saved video -> {out_path}  ({len(all_sbs)} frames @ {args.fps} fps)")
         return
 
     # --- Payload sweep: payloads × seeds × {FAME, no-FAME}; aggregate + plot. ---
