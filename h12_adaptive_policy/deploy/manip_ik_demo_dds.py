@@ -69,8 +69,15 @@ from utils import (
     plot_traj, plot_summary, plot_adapt, plot_adapt_single,
 )
 
-# Topic names (must match h1_mujoco/unitree_interface.py)
-TOPIC_LOWCMD = "rt/lowcmd"
+# Topic names. We publish commands to the safety-layer's INPUT topic
+# (`rt/safety/lowcmd_in`) — the h12_safety_layer process clips/validates and
+# republishes safe commands to `rt/lowcmd`, which the robot/sim subscribes to.
+# To bypass the safety layer (NOT recommended for real robot), change TOPIC_LOWCMD
+# back to "rt/lowcmd".
+#
+# State + odom topics come from the robot/sim directly (no safety layer in the
+# read path).
+TOPIC_LOWCMD = "rt/safety/lowcmd_in"
 TOPIC_LOWSTATE = "rt/lowstate"
 TOPIC_HIGHSTATE = "rt/sportmodestate"
 

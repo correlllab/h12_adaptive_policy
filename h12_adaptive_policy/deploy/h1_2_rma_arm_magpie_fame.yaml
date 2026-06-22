@@ -34,8 +34,8 @@ default_angles: [0.0, -0.16, 0.0, 0.36, -0.2, 0.0,
 # Arm/torso nominal. Index 0 = torso (waist yaw) held at -0.35 rad to match the FAME run's
 # training; arms straight down (0). Use arm_pose_presets to test other upper-body
 # configurations the RMA encoder adapts to.
-default_angles_arms: [-0.3,
-                      0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+default_angles_arms: [-0.0,               
+       0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                       0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
 # arm_pose_presets:
