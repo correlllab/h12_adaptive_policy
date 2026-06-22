@@ -95,6 +95,16 @@ TILT_DEG_THRESHOLD = 45.0
 N_MOTORS = 27
 TORSO_MOTOR_IDX = 12  # 13th motor in the unitree HG order
 
+# ─── Force source for the encoder ───────────────────────────────────────────
+# Default = PRIVILEGED: the encoder is fed F = (payload_kg from yaml) × g, derived
+# from the task spec — exactly what the FAME training-time encoder saw. Good for
+# sim ablations.
+#
+# Flip this to True once a real force estimator (e.g. inverse-dynamics or F/T
+# sensor) is wired into the `if USE_FORCE_ESTIMATOR:` branch in run_manip_dds.
+# That gives the encoder its real-robot-style input (no privileged info).
+USE_FORCE_ESTIMATOR = False
+
 
 # ─── DDS state snapshot ─────────────────────────────────────────────────────
 
@@ -349,15 +359,39 @@ def run_manip_dds(state, publisher, cmd_msg, crc_obj, config, rm, policy, encode
             pelvis_c, pelvis_q = pelvis_from_imu(st["imu_pos"], st["imu_quat"], st["q"][TORSO_MOTOR_IDX])
             Rp_c = quat2R(pelvis_q)
 
-            # ── Payload (computed for encoder; NOT applied to sim — no DDS topic) ──
+            # ── Commanded payload (always computed — used by traj["load"] and as the
+            #     privileged fallback for the encoder force input below) ──
             if payload_at is not None:
                 kg_now = float(payload_at(t))
             else:
                 lr = smoothstep((t - settle_s) / max(load_ramp_s, 1e-6))
                 kg_now = lr * payload_kg
-            F = kg_now * g
-            ef_left = F.astype(np.float32) if side == "left" else np.zeros(3, np.float32)
-            ef_right = F.astype(np.float32) if side == "right" else np.zeros(3, np.float32)
+            F_commanded = kg_now * g   # world-frame, sign = force ON the wrist
+
+            # ── Force fed to the encoder ────────────────────────────────────────────
+            # See USE_FORCE_ESTIMATOR at the top of the module. Default branch uses
+            # the commanded (privileged) force. The other branch is where a real
+            # estimator goes.
+            if USE_FORCE_ESTIMATOR:
+                # TODO(force_estimator): replace this stub with the real estimator.
+                # Expected contract (matches build_et_mujoco / training distribution):
+                #   - Returns ONE 3-vector per hand
+                #   - Frame: WORLD (Z up), units: Newtons
+                #   - Sign: force ON the wrist  (e.g., 2 kg downward load → ≈[0, 0, -19.6])
+                #   - Magnitudes > 30 N are direction-preserving clipped INSIDE
+                #     build_et_mujoco; no need to clip here.
+                # Suggested wiring (when a Pinocchio-based inverse-dynamics estimator
+                # is available — there's a stub in deploy_real.py:357-358):
+                #   ef_left  = -rm.get_frame_wrench("left_wrist_yaw_link")[0:3].astype(np.float32)
+                #   ef_right = -rm.get_frame_wrench("right_wrist_yaw_link")[0:3].astype(np.float32)
+                raise NotImplementedError(
+                    "USE_FORCE_ESTIMATOR=True but no estimator wired in yet — "
+                    "replace this branch with the estimator call (see TODO above)."
+                )
+            else:
+                # PRIVILEGED default: commanded payload weight, on the active side(s).
+                ef_left  = F_commanded.astype(np.float32) if side in ("left", "both") else np.zeros(3, np.float32)
+                ef_right = F_commanded.astype(np.float32) if side in ("right", "both") else np.zeros(3, np.float32)
 
             # ── IK every `decim` ticks: world-fixed target → current base frame ──
             # After the task (t > total_s), xyz_at clamps to the final waypoint, so the
