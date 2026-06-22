@@ -69,15 +69,23 @@ from utils import (
     plot_traj, plot_summary, plot_adapt, plot_adapt_single,
 )
 
-# Topic names. We publish commands to the safety-layer's INPUT topic
-# (`rt/safety/lowcmd_in`) — the h12_safety_layer process clips/validates and
-# republishes safe commands to `rt/lowcmd`, which the robot/sim subscribes to.
-# To bypass the safety layer (NOT recommended for real robot), change TOPIC_LOWCMD
-# back to "rt/lowcmd".
+# Topic names.
+#
+# Direct path (default — used when the safety_layer process is NOT running):
+#   TOPIC_LOWCMD = "rt/lowcmd"
+# Safety-layer path (the h12_safety_layer process MUST be running, configured
+# with low_cmd_in: rt/safety/lowcmd_in → low_cmd_out: rt/lowcmd):
+#   TOPIC_LOWCMD = "rt/safety/lowcmd_in"
+#
+# CRITICAL: if you set this to "rt/safety/lowcmd_in" but don't launch the safety
+# layer, the controller's commands go to a topic with no subscriber → the sim's
+# 100 ms watchdog kicks in and zeros all motor torques → robot collapses
+# silently (looks like "the policy isn't running"). Always pair the safety
+# topic with the running safety_layer process.
 #
 # State + odom topics come from the robot/sim directly (no safety layer in the
 # read path).
-TOPIC_LOWCMD = "rt/safety/lowcmd_in"
+TOPIC_LOWCMD = "rt/lowcmd"
 TOPIC_LOWSTATE = "rt/lowstate"
 TOPIC_HIGHSTATE = "rt/sportmodestate"
 
@@ -369,24 +377,47 @@ def run_manip_dds(state, publisher, cmd_msg, crc_obj, config, rm, policy, encode
             F_commanded = kg_now * g   # world-frame, sign = force ON the wrist
 
             # ── Force fed to the encoder ────────────────────────────────────────────
-            # See USE_FORCE_ESTIMATOR at the top of the module. Default branch uses
-            # the commanded (privileged) force. The other branch is where a real
-            # estimator goes.
+            # USE_FORCE_ESTIMATOR (top of module) selects the source. Default is the
+            # privileged commanded force.
+            #
+            # The `if USE_FORCE_ESTIMATOR:` branch is a STUB for a real estimator
+            # (Yutong: this is where the inverse-dynamics / F-T estimator goes).
+            # Expected contract:
+            #   - Returns ONE 3-vector per hand, WORLD frame, Newtons
+            #   - Sign: force ON the wrist  (e.g. 2 kg hanging → ≈[0, 0, -19.6])
+            #   - Magnitudes > 30 N are direction-preserving clipped INSIDE
+            #     build_et_mujoco — no need to clip here.
+            #
+            # NOTE on sim: the controller does NOT apply `xfrc_applied` to the sim
+            # (no DDS topic for it), so the sim's wrist physically feels no load,
+            # joint torques don't reflect the payload, and an inverse-dynamics
+            # estimator in sim will read ≈ 0 regardless of the commanded payload.
+            # Validate the estimator on the real robot, or first add an xfrc DDS
+            # topic to h1_mujoco. Reference impl using h12_ros2_controller is
+            # commented out below.
             if USE_FORCE_ESTIMATOR:
-                # TODO(force_estimator): replace this stub with the real estimator.
-                # Expected contract (matches build_et_mujoco / training distribution):
-                #   - Returns ONE 3-vector per hand
-                #   - Frame: WORLD (Z up), units: Newtons
-                #   - Sign: force ON the wrist  (e.g., 2 kg downward load → ≈[0, 0, -19.6])
-                #   - Magnitudes > 30 N are direction-preserving clipped INSIDE
-                #     build_et_mujoco; no need to clip here.
-                # Suggested wiring (when a Pinocchio-based inverse-dynamics estimator
-                # is available — there's a stub in deploy_real.py:357-358):
-                #   ef_left  = -rm.get_frame_wrench("left_wrist_yaw_link")[0:3].astype(np.float32)
-                #   ef_right = -rm.get_frame_wrench("right_wrist_yaw_link")[0:3].astype(np.float32)
+                # TODO(yutong): replace this branch with the real estimator.
+                # Reference inverse-dynamics impl (Pinocchio-based) — kept here for
+                # convenience. In sim this currently produces near-zero output
+                # because no external wrench is applied (see NOTE above).
+                #
+                # try:
+                #     w_l = rm.get_frame_wrench(
+                #         "left_wrist_yaw_link",  q=st["q"], tau=st["tau_est"],
+                #         imu_quat=st["imu_quat"])
+                #     w_r = rm.get_frame_wrench(
+                #         "right_wrist_yaw_link", q=st["q"], tau=st["tau_est"],
+                #         imu_quat=st["imu_quat"])
+                #     ef_left  = (-w_l[:3]).astype(np.float32)   # sign: force ON wrist
+                #     ef_right = (-w_r[:3]).astype(np.float32)
+                # except Exception as exc:
+                #     if step == 0:
+                #         print(f"[force_estimator] failed: {exc}; falling back to zeros")
+                #     ef_left  = np.zeros(3, np.float32)
+                #     ef_right = np.zeros(3, np.float32)
                 raise NotImplementedError(
-                    "USE_FORCE_ESTIMATOR=True but no estimator wired in yet — "
-                    "replace this branch with the estimator call (see TODO above)."
+                    "USE_FORCE_ESTIMATOR=True but no estimator wired in. "
+                    "Uncomment the reference impl above (or wire your own) before flipping the flag."
                 )
             else:
                 # PRIVILEGED default: commanded payload weight, on the active side(s).
