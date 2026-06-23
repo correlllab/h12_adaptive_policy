@@ -13,6 +13,7 @@ dependencies = [
     "pynput",
     "pyyaml",
     "pygame",
+    "imageio[ffmpeg]",
     # torch (RMA policy inference)
     "torch",
     "torchvision",
@@ -32,17 +33,10 @@ dependencies = [
     "qpsolvers[open_source_solvers]>=4.8.0",
     "robot_descriptions",
     # editable submodule + unitree DDS SDK
-    # "h12_ros2_controller",
+    "h12_ros2_controller",
+    "h12-safety-layer",
     "unitree_sdk2py",
 ]
-
-[build-system]
-requires = ["setuptools>=61"]
-build-backend = "setuptools.build_meta"
-
-[tool.setuptools.packages.find]
-include = ["h12_adaptive_policy", "h12_adaptive_policy.*"]
-namespaces = true
 
 [tool.uv]
 package = false
@@ -51,10 +45,48 @@ required-environments = [
 ]
 
 [tool.uv.sources]
-# h12_ros2_controller = { path = "submodules/h12_ros2_controller", editable = true }
+h12_ros2_controller = { path = "submodules/h12_ros2_controller", editable = true }
+h12-safety-layer = { git = "https://github.com/correlllab/h12_safety_layer.git", branch = "main" }
 # Editable install of the Unitree Python SDK. Non-editable (wheel) installs
 # break because upstream's setup.py ships an `__init__.py` that imports a `b2`
 # subpackage that find_packages() silently drops (no `__init__.py` under b2/).
 # An editable install uses the source tree directly, so namespace-package
 # resolution picks up `b2` and the import succeeds.
 unitree_sdk2py = { path = "submodules/unitree_sdk2_python", editable = true }
+
+# The controller submodule has its own Unitree SDK workspace for standalone use.
+# This project uses the root vendored SDK instead to avoid duplicate installs.
+[[tool.uv.dependency-metadata]]
+name = "h12-ros2-controller"
+version = "0.1.0"
+requires-dist = [
+    "matplotlib>=3.10.8",
+    "meshcat>=0.3.2",
+    "meshcat-shapes>=1.0.0",
+    "meshio>=5.3.5",
+    "numpy>=2.2.6",
+    "open3d>=0.19.0",
+    "opencv-python>=4.13.0.92",
+    "pin>=3.9.0",
+    "pin-pink>=4.1.0",
+    "pynput>=1.8.1",
+    "pyquaternion>=0.9.9",
+    "pyvista>=0.47.1",
+    "qpsolvers[clarabel,cvxopt,daqp,ecos,highs,osqp,piqp,qpalm,qpax,quadprog,scs,sip]>=4.10.0",
+    "scipy>=1.15.3",
+    "tqdm>=4.67.3",
+    "unitree-sdk2py",
+]
+
+# Upstream currently declares unitree-sdk2py as a workspace-only source, which
+# breaks direct Git resolution from this project. Keep the dependency metadata
+# here so uv can resolve the package against this repo's vendored Unitree SDK.
+[[tool.uv.dependency-metadata]]
+name = "h12-safety-layer"
+version = "0.0.0"
+requires-dist = [
+    "numpy>=2.2.6",
+    "pyyaml>=6.0.1",
+    "scipy>=1.15.3",
+    "unitree-sdk2py",
+]

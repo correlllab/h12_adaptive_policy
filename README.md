@@ -4,7 +4,10 @@ FAME — a humanoid leg policy adaptive to end-effector payloads, with three rea
 
 ## Installation
 
-This project runs in a `conda` environment (Python 3.10).
+This project supports both `uv` and `conda` environments on Python 3.10.
+`uv` is recommended because it installs the root dependencies, editable
+submodules, Git-based safety layer, and video extras from one locked project
+configuration.
 
 1. Clone the repo and initialize its submodules (`unitree_sdk2_python` and `h12_ros2_controller`):
 
@@ -14,14 +17,25 @@ This project runs in a `conda` environment (Python 3.10).
     git submodule update --init --recursive
     ```
 
-2. Create and activate the environment from `environment.yml`:
+2. Create the environment with `uv` (recommended):
+
+    ```bash
+    uv sync
+    ```
+
+    This creates `.venv/` and installs `unitree_sdk2_python` and
+    `h12_ros2_controller` as editable path dependencies. Run commands through
+    `uv run ...`, which activates the environment automatically.
+
+3. Or create and activate the environment with `conda`:
 
     ```bash
     conda env create -f environment.yml
     conda activate adaptive_env
     ```
 
-3. Install the vendored submodule packages (editable) into the env, plus the safety layer straight from GitHub:
+4. For `conda` only, install the vendored submodule packages (editable), plus
+   the safety layer and video extra:
 
     ```bash
     pip install -e submodules/unitree_sdk2_python
@@ -32,10 +46,12 @@ This project runs in a `conda` environment (Python 3.10).
 
     The Unitree SDK must be installed **editable** — a non-editable wheel install drops its `b2` subpackage and the import fails.
 
-4. Smoke-test the install:
+5. Smoke-test the install:
 
     ```bash
-    python -c "import mujoco, torch, pinocchio, h12_ros2_controller, h12_safety_layer; print('ok')"
+    uv run python -c "import mujoco, torch, pinocchio, h12_ros2_controller, h12_safety_layer, imageio; print('ok')"
+    # or, inside the conda env:
+    python -c "import mujoco, torch, pinocchio, h12_ros2_controller, h12_safety_layer, imageio; print('ok')"
     ```
 
 ## Experiments designed
