@@ -206,7 +206,7 @@ def run_one(config, m, left_f, right_f, duration_s, policy, encoder,
         d.ctrl[:leg_count] = leg_tau
 
         if upper_h12_count > 0:
-            kps_arm = config.get("kps_arms", np.ones(upper_h12_count, dtype=np.float32) * 500.0)
+            kps_arm = config.get("kps_arms", np.ones(upper_h12_count, dtype=np.float32) * 100.0)
             kds_arm = config.get("kds_arms", np.ones(upper_h12_count, dtype=np.float32) * 5.0)
             arm_t = arm_cmd[:upper_h12_count]
             arm_tau = pd_control(arm_t, d.qpos[upper_qpos_adr], kps_arm,

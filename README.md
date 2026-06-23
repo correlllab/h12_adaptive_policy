@@ -139,14 +139,24 @@ python h12_adaptive_policy/deploy/compare_plot_dds.py --fame /tmp/fame.npz --no_
 
 The encoder input includes the per-hand force (3D, Newtons, world frame). In sim, this is the **privileged** payload `kg * g` taken from the task YAML. For a real-robot run where the actual payload may differ from the script (or be unknown), a force estimator is needed.
 
-A YAML switch controls this in the deploy config:
+A YAML block controls this in the deploy config:
 
 ```yaml
-use_force_estimator: false
+force:
+  use_force_estimator: false
+  record_force: false
+  record_name: "h12_fame_force"
 ```
 
 - **`False`** (default): encoder is fed the commanded `kg * g`. Sufficient for sim ablations and scripted real-robot demos.
 - **`True`**: the controller estimates hand forces with `h12_ros2_controller`'s `RobotModel.get_frame_wrench` inside `run_manip_dds`.
+- **`record_force: true`**: saves `left_estimated_force` and `right_estimated_force` to `data/<record_name>.npz` on exit.
+
+Plot a saved record with:
+
+```bash
+scripts/plot_force_record --load h12_fame_real_force
+```
 
 A real estimator's contract:
 - One 3-vector per hand, **world frame**, **Newtons**.

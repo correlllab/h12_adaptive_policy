@@ -73,8 +73,13 @@ def load_config(config_path):
         if path_key in config and config[path_key] and isinstance(config[path_key], str):
             config[path_key] = config[path_key]
 
+    if "upper_body_pd_gains" in config:
+        gains = config["upper_body_pd_gains"]
+        config["kps_arms"] = np.array(gains["kp"], dtype=np.float32)
+        config["kds_arms"] = np.array(gains["kd"], dtype=np.float32)
+
     array_keys = ["kps", "kds", "default_angles", "cmd_scale", "cmd_init"]
-    if "kps_arms" in config:
+    if "kps_arms" in config and "kds_arms" in config:
         array_keys.extend(["kps_arms", "kds_arms"])
     if "default_angles_arms" in config:
         array_keys.append("default_angles_arms")
@@ -329,7 +334,7 @@ def main():
 
             upper_h12_count = h12_ctrl_count - config["num_actions"]
             if upper_h12_count > 0:
-                kps_arm = config.get("kps_arms", np.ones(upper_h12_count, dtype=np.float32) * 500.0)
+                kps_arm = config.get("kps_arms", np.ones(upper_h12_count, dtype=np.float32) * 100.0)
                 kds_arm = config.get("kds_arms", np.ones(upper_h12_count, dtype=np.float32) * 5.0)
                 arm_target_positions = config.get("default_angles_arms", np.zeros(upper_h12_count, dtype=np.float32))
                 if len(arm_target_positions) < upper_h12_count:

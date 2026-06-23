@@ -125,7 +125,7 @@ def run_manip(config, m, ids, policy, encoder, *, side, rm, xyz_at, total_s, pay
                              np.zeros_like(config["kps"]), d.qvel[leg_vadr], config["kds"])
         d.ctrl[:leg_count] = np.clip(np.nan_to_num(leg_tau), -max_tau, max_tau)
         if upper_n > 0:
-            kpa = config.get("kps_arms", np.ones(upper_n) * 500.0)
+            kpa = config.get("kps_arms", np.ones(upper_n) * 100.0)
             kda = config.get("kds_arms", np.ones(upper_n) * 5.0)
             arm_tau = pd_control(arm_cmd, d.qpos[up_qadr], kpa, np.zeros(upper_n), d.qvel[up_vadr], kda)
             d.ctrl[leg_count:h12] = np.clip(np.nan_to_num(arm_tau), -max_tau, max_tau)
@@ -345,7 +345,7 @@ def run_carry(config, m, ids, policy, encoder, *, rm,
                              np.zeros_like(config["kps"]), d.qvel[leg_vadr], config["kds"])
         d.ctrl[:leg_count] = np.clip(np.nan_to_num(leg_tau), -max_tau, max_tau)
         if upper_n > 0:
-            kpa = config.get("kps_arms", np.ones(upper_n) * 500.0)
+            kpa = config.get("kps_arms", np.ones(upper_n) * 100.0)
             kda = config.get("kds_arms", np.ones(upper_n) * 5.0)
             arm_tau = pd_control(arm_cmd, d.qpos[up_qadr], kpa,
                                  np.zeros(upper_n), d.qvel[up_vadr], kda)

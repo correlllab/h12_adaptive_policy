@@ -207,6 +207,13 @@ def send_cmd(publisher, cmd_msg, crc_obj):
     publisher.Write(cmd_msg)
 
 
+def force_record_path(record_name):
+    record_name = os.path.basename(record_name)
+    if not record_name.endswith(".npz"):
+        record_name = f"{record_name}.npz"
+    return os.path.join(_REPO_ROOT, "data", record_name)
+
+
 # ─── Forward kinematics for wrist (replaces privileged d.xpos) ──────────────
 
 def forward_kin_wrist_pelvis(rm: RobotModel, side: str, q27: np.ndarray) -> np.ndarray:
@@ -236,6 +243,88 @@ class _DataProxy:
         self.qvel = np.concatenate([np.zeros(3), pelvis_omega, dq27]).astype(np.float64)
 
 
+def _start_key_pressed():
+    import select
+
+    try:
+        ready = select.select([sys.stdin], [], [], 0.0)[0]
+    except (OSError, ValueError):
+        return False
+    if not ready:
+        return False
+    try:
+        return sys.stdin.read(1).lower() == "s"
+    except (OSError, ValueError):
+        return False
+
+
+def move_to_initial_pose(
+    state, publisher, cmd_msg, crc_obj, ik, *, side, arm_down, torso,
+    initial_target, default_angles, leg_count, upper_n, kp_27, kd_27, dt,
+):
+    """Move all motors to the initial task pose gradually over 5s and hold until the user presses S."""
+    print(
+        "[init] moving motors to initial pose over 5s. Press S to start policy after.",
+        flush=True,
+    )
+    old_terminal_settings = None
+    if sys.stdin.isatty():
+        import termios
+        import tty
+
+        old_terminal_settings = termios.tcgetattr(sys.stdin.fileno())
+        tty.setcbreak(sys.stdin.fileno())
+
+    # Wait for the first state update to capture current positions
+    while not state.have_low_state:
+        state.new_state_event.wait(0.02)
+        state.new_state_event.clear()
+        
+    st = state.snapshot()
+    start_q = st["q"].copy()
+    
+    start_time = time.time()
+    duration = 5.0
+
+    arm_q_init = arm_down.copy().astype(np.float32)
+    try:
+        while True:
+            state.new_state_event.wait(timeout=0.02)
+            state.new_state_event.clear()
+            st = state.snapshot()
+
+            arm_q_init = ik.step(initial_target, dt).astype(np.float32)
+            
+            # Construct target state
+            target_q = np.zeros(N_MOTORS, dtype=np.float32)
+            target_q[:leg_count] = default_angles[:leg_count]
+            
+            upper_cmd = np.zeros(upper_n, dtype=np.float32)
+            upper_cmd[0] = torso
+            upper_cmd[ARM_SLICE[side]] = arm_q_init
+            upper_cmd[ARM_SLICE["left" if side == "right" else "right"]] = arm_down
+            target_q[leg_count:leg_count + upper_n] = upper_cmd[:upper_n]
+
+            # Interpolate
+            alpha = min(1.0, (time.time() - start_time) / duration)
+            q_des = (1.0 - alpha) * start_q + alpha * target_q
+
+            fill_low_cmd(cmd_msg, q_des=q_des, dq_des=0.0, kp=kp_27, kd=kd_27, tau=0.0)
+            send_cmd(publisher, cmd_msg, crc_obj)
+
+            if _start_key_pressed():
+                if alpha < 1.0:
+                    print("[init] S pressed early; jumping to policy.", flush=True)
+                else:
+                    print("[init] S pressed; starting policy.", flush=True)
+                return arm_q_init
+    finally:
+        if old_terminal_settings is not None:
+            import termios
+
+            termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old_terminal_settings)
+
+
 # ─── Main control loop ─────────────────────────────────────────────────────
 
 def run_manip_dds(state, publisher, cmd_msg, crc_obj, config, rm, policy, encoder, *,
@@ -262,11 +351,8 @@ def run_manip_dds(state, publisher, cmd_msg, crc_obj, config, rm, policy, encode
         fill_low_cmd(cmd_msg, q_des=st["q"], dq_des=0.0, kp=80.0, kd=2.0, tau=0.0)
         send_cmd(publisher, cmd_msg, crc_obj)
 
-    # ── Snapshot the nominal pelvis pose AFTER settling ──
-    st0 = state.snapshot()
-    p0, q0 = pelvis_from_imu(st0["imu_pos"], st0["imu_quat"], st0["q"][TORSO_MOTOR_IDX])
-    R0 = quat2R(q0)
-    print(f"[ctrl] nominal pelvis pose: p0={p0.round(3)}  q0={q0.round(3)}", flush=True)
+    dt = SIM_DT
+    decim = POLICY_DECIM
 
     # ── Setup IK + bookkeeping ──
     leg_count = config["num_actions"]
@@ -275,15 +361,35 @@ def run_manip_dds(state, publisher, cmd_msg, crc_obj, config, rm, policy, encode
     ik = ArmIK(rm, side, arm_down, torso)
     arm_q_hold = arm_down.copy().astype(np.float32)
 
-    # PD gains as 27-vectors (legs use config['kps']/['kds'], arms use kps_arms/kds_arms).
+    # PD gains as 27-vectors (legs use config['kps']/['kds'], upper body uses YAML gains).
     kp_27 = np.zeros(N_MOTORS, dtype=np.float32)
     kd_27 = np.zeros(N_MOTORS, dtype=np.float32)
     kp_27[:leg_count] = config["kps"]
     kd_27[:leg_count] = config["kds"]
-    kps_arms = config.get("kps_arms", np.full(upper_n, 500.0, dtype=np.float32))
+    kps_arms = config.get("kps_arms", np.full(upper_n, 100.0, dtype=np.float32))
     kds_arms = config.get("kds_arms", np.full(upper_n, 5.0, dtype=np.float32))
     kp_27[leg_count:leg_count + upper_n] = kps_arms[:upper_n]
     kd_27[leg_count:leg_count + upper_n] = kds_arms[:upper_n]
+
+    arm_q_hold = move_to_initial_pose(
+        state, publisher, cmd_msg, crc_obj, ik,
+        side=side,
+        arm_down=arm_down,
+        torso=torso,
+        initial_target=np.asarray(xyz_at(0.0), dtype=np.float32),
+        default_angles=np.asarray(config["default_angles"], dtype=np.float32),
+        leg_count=leg_count,
+        upper_n=upper_n,
+        kp_27=kp_27,
+        kd_27=kd_27,
+        dt=dt,
+    )
+
+    # ── Snapshot the nominal pelvis pose AFTER initialization / user start ──
+    st0 = state.snapshot()
+    p0, q0 = pelvis_from_imu(st0["imu_pos"], st0["imu_quat"], st0["q"][TORSO_MOTOR_IDX])
+    R0 = quat2R(q0)
+    print(f"[ctrl] nominal pelvis pose: p0={p0.round(3)}  q0={q0.round(3)}", flush=True)
 
     policy_joints = int(config.get("policy_num_joints", N_MOTORS))
     cmd_3 = config["cmd_init"].copy()
@@ -297,11 +403,10 @@ def run_manip_dds(state, publisher, cmd_msg, crc_obj, config, rm, policy, encode
     z_hist = np.zeros((3, RMA_LATENT_DIM), dtype=np.float32)
     g = np.array([0.0, 0.0, -9.81])
 
-    dt = SIM_DT
-    decim = POLICY_DECIM
     n_steps_task = int(total_s / dt)
 
     traj = {"t": [], "world": [], "cmd_world": [], "bpos": [], "bquat": [], "load": [], "z": []}
+    force_record = {"t": [], "left_estimated_force": [], "right_estimated_force": []}
     ssq_base = ssq_ee = ssq_eeb = 0.0
     max_ee = max_tilt = 0.0
     ss_ee = 0.0
@@ -329,6 +434,7 @@ def run_manip_dds(state, publisher, cmd_msg, crc_obj, config, rm, policy, encode
             "tilt_max": max_tilt,
             "fell": int(fell),
             "traj": {k: np.array(v) for k, v in traj.items()},
+            "force_record": {k: np.array(v) for k, v in force_record.items()},
         }
 
     try:
@@ -387,7 +493,6 @@ def run_manip_dds(state, publisher, cmd_msg, crc_obj, config, rm, policy, encode
                     # Match deploy_real's sign convention: force ON wrist.
                     ef_left = (-left_wrench[:3]).astype(np.float32)
                     ef_right = (-right_wrench[:3]).astype(np.float32)
-                    print(f"Estimated forces: left={ef_left}, right={ef_right}")
                 except Exception as exc:
                     if step == 0:
                         print(f"[force_estimator] failed: {exc}; falling back to zeros", flush=True)
@@ -397,6 +502,9 @@ def run_manip_dds(state, publisher, cmd_msg, crc_obj, config, rm, policy, encode
                 # PRIVILEGED default: commanded payload weight, on the active side(s).
                 ef_left  = F_commanded.astype(np.float32) if side in ("left", "both") else np.zeros(3, np.float32)
                 ef_right = F_commanded.astype(np.float32) if side in ("right", "both") else np.zeros(3, np.float32)
+            force_record["t"].append(t)
+            force_record["left_estimated_force"].append(ef_left.copy())
+            force_record["right_estimated_force"].append(ef_right.copy())
 
             # ── IK every `decim` ticks: world-fixed target → current base frame ──
             # After the task (t > total_s), xyz_at clamps to the final waypoint, so the
@@ -551,7 +659,10 @@ def main():
     low_cmd_topic = config.get("lowcmd_topic", DEFAULT_LOW_CMD_TOPIC)
     low_state_topic = config.get("lowstate_topic", DEFAULT_LOW_STATE_TOPIC)
     high_state_topic = config.get("highstate_topic", DEFAULT_HIGH_STATE_TOPIC)
-    use_force_estimator = bool(config.get("use_force_estimator", DEFAULT_FORCE_ESTIMATOR_ENABLED))
+    force_config = config.get("force", {})
+    use_force_estimator = bool(force_config.get("use_force_estimator", DEFAULT_FORCE_ESTIMATOR_ENABLED))
+    record_force = bool(force_config.get("record_force", False))
+    force_record_name = force_config.get("record_name", "force_record")
 
     # ── Pinocchio model + policy + encoder ──
     robot_model = RobotModel(os.path.join(_REPO_ROOT, "h1_2/h1_2_handless.urdf"), handless=True)
@@ -577,7 +688,8 @@ def main():
     ChannelFactoryInitialize(args.dds_id, args.net) if args.net else ChannelFactoryInitialize(args.dds_id)
     print(
         f"[dds] topics: lowcmd={low_cmd_topic} lowstate={low_state_topic} "
-        f"highstate={high_state_topic} force_estimator={use_force_estimator}",
+        f"highstate={high_state_topic} force_estimator={use_force_estimator} "
+        f"record_force={record_force}",
         flush=True,
     )
 
@@ -650,6 +762,17 @@ def main():
                 fell=task_metrics["fell"],
             )
             print(f"saved traj -> {args.save_traj}")
+        if record_force and task_metrics is not None:
+            record = task_metrics["force_record"]
+            out_path = force_record_path(force_record_name)
+            os.makedirs(os.path.dirname(out_path), exist_ok=True)
+            np.savez(
+                out_path,
+                force_time=record["t"],
+                left_estimated_force=record["left_estimated_force"],
+                right_estimated_force=record["right_estimated_force"],
+            )
+            print(f"saved force record -> {out_path}")
         print("[ctrl] shutting down (soft damping)")
         shutdown_soft(state, publisher, cmd_msg, crc_obj)
 
