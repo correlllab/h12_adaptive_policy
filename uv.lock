@@ -16,11 +16,6 @@ name = "h12-ros2-controller"
 version = "0.1.0"
 requires-dist = ["matplotlib>=3.10.8", "meshcat>=0.3.2", "meshcat-shapes>=1.0.0", "meshio>=5.3.5", "numpy>=2.2.6", "open3d>=0.19.0", "opencv-python>=4.13.0.92", "pin>=3.9.0", "pin-pink>=4.1.0", "pynput>=1.8.1", "pyquaternion>=0.9.9", "pyvista>=0.47.1", "qpsolvers[clarabel,cvxopt,daqp,ecos,highs,osqp,piqp,qpalm,qpax,quadprog,scs,sip]>=4.10.0", "scipy>=1.15.3", "tqdm>=4.67.3", "unitree-sdk2py"]
 
-[[manifest.dependency-metadata]]
-name = "h12-safety-layer"
-version = "0.0.0"
-requires-dist = ["numpy>=2.2.6", "pyyaml>=6.0.1", "scipy>=1.15.3", "unitree-sdk2py"]
-
 [[package]]
 name = "absl-py"
 version = "2.4.0"
@@ -777,7 +772,6 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "h12-ros2-controller" },
-    { name = "h12-safety-layer" },
     { name = "imageio", extra = ["ffmpeg"] },
     { name = "matplotlib" },
     { name = "meshcat" },
@@ -808,7 +802,6 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "h12-ros2-controller", editable = "submodules/h12_ros2_controller" },
-    { name = "h12-safety-layer", git = "https://github.com/correlllab/h12_safety_layer.git?branch=main" },
     { name = "imageio", extras = ["ffmpeg"] },
     { name = "matplotlib" },
     { name = "meshcat" },
@@ -876,17 +869,6 @@ requires-dist = [
     { name = "qpsolvers", extras = ["clarabel", "cvxopt", "daqp", "ecos", "highs", "osqp", "piqp", "qpalm", "qpax", "quadprog", "scs", "sip"], specifier = ">=4.10.0" },
     { name = "scipy", specifier = ">=1.15.3" },
     { name = "tqdm", specifier = ">=4.67.3" },
-    { name = "unitree-sdk2py" },
-]
-
-[[package]]
-name = "h12-safety-layer"
-version = "0.0.0"
-source = { git = "https://github.com/correlllab/h12_safety_layer.git?branch=main#d04379a6b01743682d8d04b3bcca35f77d1205cc" }
-dependencies = [
-    { name = "numpy" },
-    { name = "pyyaml" },
-    { name = "scipy" },
     { name = "unitree-sdk2py" },
 ]
 

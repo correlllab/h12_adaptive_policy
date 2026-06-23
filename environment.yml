@@ -33,4 +33,5 @@ dependencies:
   - pip:
     - meshcat
     - meshcat-shapes
+    - imageio[ffmpeg]
     - pin-pink

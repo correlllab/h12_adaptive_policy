@@ -101,7 +101,7 @@ class ArmIK:
         self.pt.set_target(self.cfg.q)
         # safety_break=False so that sub-microradian numerical excursions past joint
         # limits (~1e-6 rad) don't raise NotWithinConfigurationLimits; Pink clamps
-        # instead. The downstream h12_safety_layer clip on the PD target enforces
+        # instead. The downstream PD target clipping enforces
         # the real safety envelope.
         vel = pink.solve_ik(self.cfg, [self.ft, self.pt], dt=dt, solver=self.solver,
                             safety_break=False)

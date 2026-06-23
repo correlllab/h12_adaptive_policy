@@ -23,10 +23,6 @@ _PACKAGE_DIR = os.path.abspath(os.path.join(_SCRIPT_DIR, ".."))
 if _PACKAGE_DIR not in sys.path:
     sys.path.insert(0, _PACKAGE_DIR)
 
-# h12_safety_layer is installed from GitHub (pip), not vendored — see README. The sim
-# reuses its joint-position limits to clamp targets the same way the real-robot relay
-# clamps commands; we import it directly (no sys.path juggling).
-
 RMA_LATENT_DIM = 8
 RMA_ACTOR_Z_DIM = 24   # 3 * 8
 RMA_ET_DIM = 21        # 15 upper dof + left_xyz(3) + right_xyz(3), hand-only
@@ -89,49 +85,16 @@ def get_gravity_orientation(quat):
     return quat_rotate_inverse(quat, np.array([0.0, 0.0, -1.0]))
 
 
-def load_safety_q_clip(sim_joint_names, safety_config=None):
-    """Per-joint position clip bounds ``(low, high)`` aligned to ``sim_joint_names``.
+def clip_policy_action(action, config):
+    """Apply the same YAML-driven leg action clipping used by deploy_real."""
+    scaled_action = action * config["action_scale"]
 
-    Reuses h12_safety_layer's authoritative joint-position limits so the sim clamps
-    target joint positions with the SAME bounds the real-robot safety relay enforces.
-    h12_safety_layer is installed from GitHub (``pip install --no-deps
-    git+https://github.com/correlllab/h12_safety_layer.git@main``) and imported directly.
-    By default we use its URDF joint-position limits; pass a ``safety_config`` yaml path
-    to derive clipped bounds from a safety preset instead.
+    clipped_action = np.clip(
+                            scaled_action,
+                            np.array(config["legs_motor_pos_lower_limit_list"]),
+                            np.array(config["legs_motor_pos_upper_limit_list"]))
 
-    Joints are matched by name (not index), so reordering the model actuators or the
-    safety joint list stays correct. The safety JOINT_NAMES use a ``_joint`` suffix;
-    MuJoCo joints may omit it, so we normalize. Returns two float32 arrays of
-    len(sim_joint_names).
-    """
-    try:
-        from h12_safety_layer.core.joint_limits import JOINT_NAMES, URDF_POSITION_LIMITS
-    except ImportError as e:
-        raise ImportError(
-            "h12_safety_layer is not installed. Install it with `pip install --no-deps "
-            "git+https://github.com/correlllab/h12_safety_layer.git@main`, or set "
-            "`safety_clip: false` in the deploy config to bypass."
-        ) from e
-
-    if safety_config is not None:
-        from h12_safety_layer.core.config import load_config as load_safety_config
-        q_clip = load_safety_config(safety_config)["limits"]["q_clip_limits"]  # (27, 2)
-        bounds = {JOINT_NAMES[i]: (float(q_clip[i, 0]), float(q_clip[i, 1])) for i in range(len(JOINT_NAMES))}
-    else:
-        bounds = {JOINT_NAMES[i]: (float(URDF_POSITION_LIMITS[i]["low"]), float(URDF_POSITION_LIMITS[i]["high"]))
-                  for i in range(len(JOINT_NAMES))}
-
-    low = np.empty(len(sim_joint_names), dtype=np.float32)
-    high = np.empty(len(sim_joint_names), dtype=np.float32)
-    for k, sn in enumerate(sim_joint_names):
-        key = sn if sn.endswith("_joint") else f"{sn}_joint"
-        if key not in bounds:
-            raise KeyError(
-                f"Sim joint '{sn}' not found in h12_safety_layer JOINT_NAMES; "
-                "cannot build safety clip bounds (set safety_clip: false to bypass)."
-            )
-        low[k], high[k] = bounds[key]
-    return low, high
+    return config["default_angles"] + clipped_action
 
 
 def compute_observation(d, config, action, cmd, height_cmd, n_joints, qj=None, dqj=None):
@@ -259,24 +222,6 @@ def main():
     upper_qpos_adr = h12_qpos_adr[leg_count:h12_ctrl_count]
     upper_qvel_adr = h12_qvel_adr[leg_count:h12_ctrl_count]
 
-    # Safety: build per-joint position clip bounds (in sim actuator order) from
-    # h12_safety_layer. This routes the sim's target joint positions through the SAME
-    # joint-limit clamp the real-robot safety relay enforces, keeping sim and hardware
-    # safety consistent. Disable with `safety_clip: false` (or override the limits file
-    # with `safety_config:`) in the deploy YAML.
-    safety_clip = bool(config.get("safety_clip", True))
-    leg_q_low = leg_q_high = upper_q_low = upper_q_high = None
-    if safety_clip:
-        h12_joint_names = [
-            mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_JOINT, int(j)) for j in h12_joint_ids
-        ]
-        q_clip_low, q_clip_high = load_safety_q_clip(h12_joint_names, config.get("safety_config"))
-        leg_q_low, leg_q_high = q_clip_low[:leg_count], q_clip_high[:leg_count]
-        upper_q_low, upper_q_high = q_clip_low[leg_count:h12_ctrl_count], q_clip_high[leg_count:h12_ctrl_count]
-        print(f"[safety] H12 target positions clamped via h12_safety_layer ({len(h12_joint_names)} joints)")
-    else:
-        print("[safety] safety_clip disabled in config; sim targets are NOT clamped")
-
     print(
         f"Model DOFs (qpos): {d.qpos.shape[0]}, joints(total): {n_joints_total}, "
         f"policy joints: {policy_joints}, ctrl size(total): {d.ctrl.shape[0]}, h12 ctrl count: {h12_ctrl_count}"
@@ -342,10 +287,6 @@ def main():
                 d.xfrc_applied[left_wrist_id, :3] = left_hand_force   # x, y, z all applied
                 d.xfrc_applied[right_wrist_id, :3] = right_hand_force
 
-            # Safety clamp: route leg target positions through the h12_safety_layer limits.
-            if safety_clip:
-                target_dof_pos = np.clip(target_dof_pos, leg_q_low, leg_q_high)
-
             leg_tau = pd_control(
                 target_dof_pos,
                 d.qpos[leg_qpos_adr],
@@ -366,11 +307,6 @@ def main():
                 arm_target_positions = config.get("default_angles_arms", np.zeros(upper_h12_count, dtype=np.float32))
                 if len(arm_target_positions) < upper_h12_count:
                     arm_target_positions = np.zeros(upper_h12_count, dtype=np.float32)
-                # Safety clamp: route torso/arm target positions through h12_safety_layer limits.
-                if safety_clip:
-                    arm_target_positions = np.clip(
-                        arm_target_positions[:upper_h12_count], upper_q_low, upper_q_high
-                    )
                 arm_tau = pd_control(
                     arm_target_positions[:upper_h12_count],
                     d.qpos[upper_qpos_adr],
@@ -445,7 +381,7 @@ def main():
                 if counter % (config["control_decimation"] * 50) == 0:
                     print(f"z_t: {z_t}")
 
-                target_dof_pos = action * config["action_scale"] + config["default_angles"]
+                target_dof_pos = clip_policy_action(action, config)
 
             viewer.sync()
             time_until_next_step = m.opt.timestep - (time.time() - step_start)

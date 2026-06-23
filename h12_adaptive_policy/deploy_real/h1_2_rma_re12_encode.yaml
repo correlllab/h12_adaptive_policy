@@ -6,7 +6,7 @@ msg_type: "hg"
 imu_type: "torso"
 
 # lowcmd_topic: "rt/lowcmd"            # direct to robot (bypasses safety layer)
-lowcmd_topic: "rt/safety/lowcmd_in"    # -> h12_safety_layer relay -> rt/lowcmd
+lowcmd_topic: "rt/safety/lowcmd_in"    # -> safety relay -> rt/lowcmd
 lowstate_topic: "rt/lowstate"
 
 leg_joint2motor_idx: [0, 1, 2, 3, 4, 5,

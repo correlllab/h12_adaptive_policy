@@ -29,7 +29,7 @@ for p in (_SCRIPT_DIR, os.path.join(_REPO_ROOT, "h12_adaptive_policy"),
 import mujoco
 import torch
 from mujoco_deploy_h12_rma import (
-    load_config, load_safety_q_clip, pd_control, compute_observation,
+    load_config, clip_policy_action, pd_control, compute_observation,
     build_et_mujoco, get_gravity_orientation, RMA_LATENT_DIM,
 )
 from RMA.rma_modules.env_factor_encoder import EnvFactorEncoder, EnvFactorEncoderCfg
@@ -46,7 +46,7 @@ HEIGHT_THRESHOLD = 0.55
 TILT_DEG_THRESHOLD = 45.0
 
 
-def run_manip(config, m, ids, policy, encoder, bounds, *, side, rm, xyz_at, total_s, payload_kg,
+def run_manip(config, m, ids, policy, encoder, *, side, rm, xyz_at, total_s, payload_kg,
               settle_s, load_ramp_s, torso, no_encode, payload_at=None, renderer=None, cam=None,
               render_stride=20, label="", live_view=False, seed=None, init_jitter=0.01):
     d = mujoco.MjData(m); mujoco.mj_forward(m, d)
@@ -84,9 +84,6 @@ def run_manip(config, m, ids, policy, encoder, bounds, *, side, rm, xyz_at, tota
     z_hist = np.zeros((3, RMA_LATENT_DIM), dtype=np.float32)
     g = np.array([0, 0, -9.81]); max_tau = 200.0
     n_steps = int(total_s / dt); ss_start = max(0, n_steps - int(round(1.0 / dt)))
-    sc = bounds["safety_clip"]; lql, lqh = bounds["leg_q_low"], bounds["leg_q_high"]
-    uql, uqh = bounds["upper_q_low"], bounds["upper_q_high"]
-
     ssq_base = ssq_ee = ssq_eeb = 0.0; max_ee = max_tilt = 0.0; ss_ee = 0.0; nacc = ssn = 0; fell = False
     e_ee = e_ee_b = 0.0
     traj = {"t": [], "world": [], "cmd_world": [], "bpos": [], "bquat": [], "load": [], "z": []}
@@ -124,16 +121,13 @@ def run_manip(config, m, ids, policy, encoder, bounds, *, side, rm, xyz_at, tota
         arm_cmd[ARM_SLICE[side]] = arm_q_hold
         arm_cmd[ARM_SLICE["left" if side == "right" else "right"]] = arm_down
 
-        if sc:
-            target_dof_pos = np.clip(target_dof_pos, lql, lqh)
         leg_tau = pd_control(target_dof_pos, d.qpos[leg_qadr], config["kps"],
                              np.zeros_like(config["kps"]), d.qvel[leg_vadr], config["kds"])
         d.ctrl[:leg_count] = np.clip(np.nan_to_num(leg_tau), -max_tau, max_tau)
         if upper_n > 0:
             kpa = config.get("kps_arms", np.ones(upper_n) * 500.0)
             kda = config.get("kds_arms", np.ones(upper_n) * 5.0)
-            at = np.clip(arm_cmd, uql, uqh) if sc else arm_cmd
-            arm_tau = pd_control(at, d.qpos[up_qadr], kpa, np.zeros(upper_n), d.qvel[up_vadr], kda)
+            arm_tau = pd_control(arm_cmd, d.qpos[up_qadr], kpa, np.zeros(upper_n), d.qvel[up_vadr], kda)
             d.ctrl[leg_count:h12] = np.clip(np.nan_to_num(arm_tau), -max_tau, max_tau)
         if d.ctrl.shape[0] > h12:
             gr = m.actuator_ctrlrange[h12:, :]; d.ctrl[h12:] = 0.5 * (gr[:, 0] + gr[:, 1])
@@ -193,7 +187,7 @@ def run_manip(config, m, ids, policy, encoder, bounds, *, side, rm, xyz_at, tota
             actor_obs = np.concatenate([np.concatenate(list(obs_hist)),
                                         np.flip(z_hist, 0).flatten()]).astype(np.float32)
             action = policy(torch.from_numpy(actor_obs).unsqueeze(0)).detach().numpy().squeeze()
-            target_dof_pos = action * config["action_scale"] + config["default_angles"]
+            target_dof_pos = clip_policy_action(action, config)
 
         if viewer is not None:
             if not viewer.is_running():
@@ -263,7 +257,7 @@ def _status_color(tilt_deg, fell):
     return (0.1, 1.0, 0.2, 1.0)
 
 
-def run_carry(config, m, ids, policy, encoder, bounds, *, rm,
+def run_carry(config, m, ids, policy, encoder, *, rm,
               torso_at, payload_at, total_s, left_arm_q, right_arm_q,
               no_encode, label="", seed=None, init_jitter=0.01, live_view=False,
               renderer=None, cam=None, render_stride=20):
@@ -311,10 +305,6 @@ def run_carry(config, m, ids, policy, encoder, bounds, *, rm,
     z_hist = np.zeros((3, RMA_LATENT_DIM), dtype=np.float32)
     g = np.array([0.0, 0.0, -9.81]); max_tau = 200.0
     n_steps = int(total_s / dt)
-    sc = bounds["safety_clip"]
-    lql, lqh = bounds["leg_q_low"], bounds["leg_q_high"]
-    uql, uqh = bounds["upper_q_low"], bounds["upper_q_high"]
-
     ssq_base = 0.0; max_tilt = 0.0; nacc = 0; fell = False
     traj = {"t": [], "bpos": [], "bquat": [], "torso_cmd": [], "torso_actual": [],
             "load": [], "z": []}
@@ -351,16 +341,13 @@ def run_carry(config, m, ids, policy, encoder, bounds, *, rm,
         arm_cmd[ARM_SLICE["right"]] = right_arm_q
 
         # PD — legs from policy, upper from arm_cmd
-        if sc:
-            target_dof_pos = np.clip(target_dof_pos, lql, lqh)
         leg_tau = pd_control(target_dof_pos, d.qpos[leg_qadr], config["kps"],
                              np.zeros_like(config["kps"]), d.qvel[leg_vadr], config["kds"])
         d.ctrl[:leg_count] = np.clip(np.nan_to_num(leg_tau), -max_tau, max_tau)
         if upper_n > 0:
             kpa = config.get("kps_arms", np.ones(upper_n) * 500.0)
             kda = config.get("kds_arms", np.ones(upper_n) * 5.0)
-            at_clip = np.clip(arm_cmd, uql, uqh) if sc else arm_cmd
-            arm_tau = pd_control(at_clip, d.qpos[up_qadr], kpa,
+            arm_tau = pd_control(arm_cmd, d.qpos[up_qadr], kpa,
                                  np.zeros(upper_n), d.qvel[up_vadr], kda)
             d.ctrl[leg_count:h12] = np.clip(np.nan_to_num(arm_tau), -max_tau, max_tau)
         if d.ctrl.shape[0] > h12:
@@ -401,7 +388,7 @@ def run_carry(config, m, ids, policy, encoder, bounds, *, rm,
             actor_obs = np.concatenate([np.concatenate(list(obs_hist)),
                                         np.flip(z_hist, 0).flatten()]).astype(np.float32)
             action = policy(torch.from_numpy(actor_obs).unsqueeze(0)).detach().numpy().squeeze()
-            target_dof_pos = action * config["action_scale"] + config["default_angles"]
+            target_dof_pos = clip_policy_action(action, config)
 
         # Offscreen render path (for sweep_video). Same scene markers as the live view:
         # force arrows on both hands + a color-coded status ball above the torso.
@@ -447,7 +434,7 @@ def run_carry(config, m, ids, policy, encoder, bounds, *, rm,
     }
 
 
-def run_bimanual_carry(args, mc, task, config, m, ids, policy, encoder, bounds,
+def run_bimanual_carry(args, mc, task, config, m, ids, policy, encoder,
                        rm, arm_down, payload, figdir):
     """Top-level dispatch for the bimanual carry task. Solves bimanual IK once at the
     initial torso, runs FAME and no-FAME conditions back-to-back, saves the comparison plot.
@@ -484,7 +471,7 @@ def run_bimanual_carry(args, mc, task, config, m, ids, policy, encoder, bounds,
     if args.view:
         no_enc = (args.view_cond == "no-FAME")
         print(f"\n[live view] {args.view_cond}  (close the viewer window to stop)")
-        mt = run_carry(config, m, ids, policy, encoder, bounds, rm=rm,
+        mt = run_carry(config, m, ids, policy, encoder, rm=rm,
                        torso_at=torso_at, payload_at=payload_at, total_s=total_s,
                        left_arm_q=left_arm_q, right_arm_q=right_arm_q,
                        no_encode=no_enc, label=f"{args.view_cond} (bimanual_carry)",
@@ -508,7 +495,7 @@ def run_bimanual_carry(args, mc, task, config, m, ids, policy, encoder, bounds,
                                                 load_ramp_s, drop_at_s, drop_ramp_s)
             clips = {}
             for lab, no_enc in [("FAME", False), ("no-FAME", True)]:
-                mt = run_carry(config, m, ids, policy, encoder, bounds, rm=rm,
+                mt = run_carry(config, m, ids, policy, encoder, rm=rm,
                                torso_at=torso_at, payload_at=payload_at_kg,
                                total_s=total_s,
                                left_arm_q=left_arm_q, right_arm_q=right_arm_q,
@@ -541,7 +528,7 @@ def run_bimanual_carry(args, mc, task, config, m, ids, policy, encoder, bounds,
             for s in range(n_seeds):
                 seed = s if n_seeds > 1 else None
                 for lab, no_enc in [("FAME", False), ("no-FAME", True)]:
-                    mt = run_carry(config, m, ids, policy, encoder, bounds, rm=rm,
+                    mt = run_carry(config, m, ids, policy, encoder, rm=rm,
                                    torso_at=torso_at, payload_at=payload_at_kg,
                                    total_s=total_s,
                                    left_arm_q=left_arm_q, right_arm_q=right_arm_q,
@@ -559,7 +546,7 @@ def run_bimanual_carry(args, mc, task, config, m, ids, policy, encoder, bounds,
 
     trajs = {}
     for lab, no_enc in [("FAME", False), ("no-FAME", True)]:
-        mt = run_carry(config, m, ids, policy, encoder, bounds, rm=rm,
+        mt = run_carry(config, m, ids, policy, encoder, rm=rm,
                        torso_at=torso_at, payload_at=payload_at, total_s=total_s,
                        left_arm_q=left_arm_q, right_arm_q=right_arm_q,
                        no_encode=no_enc, label=f"{lab} (bimanual_carry)")
@@ -632,16 +619,6 @@ def main():
     encoder = EnvFactorEncoder(EnvFactorEncoderCfg())
     encoder.load_state_dict(torch.load(config["encoder_path"], map_location="cpu", weights_only=True))
     encoder.eval()
-    sc = bool(config.get("safety_clip", True))
-    bounds = dict(safety_clip=sc, leg_q_low=None, leg_q_high=None, upper_q_low=None, upper_q_high=None)
-    if sc:
-        lc = config["num_actions"]; hc = int(config.get("h12_ctrl_count", 27))
-        names = [mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_JOINT, int(j))
-                 for j in m.actuator_trnid[:hc, 0].astype(int)]
-        qlo, qhi = load_safety_q_clip(names, config.get("safety_config"))
-        bounds.update(leg_q_low=qlo[:lc], leg_q_high=qhi[:lc],
-                      upper_q_low=qlo[lc:hc], upper_q_high=qhi[lc:hc])
-
     # Pinocchio model — used by every task variant (single-arm IK or bimanual carry)
     rm = RobotModel(os.path.join(_REPO_ROOT, "h1_2/h1_2_handless.urdf"), handless=True)
 
@@ -652,7 +629,7 @@ def main():
     # bimanual_carry dispatch: separate from single-arm waypoint logic (different yaml/run loop)
     # =============================================================================================
     if args.task == "bimanual_carry":
-        run_bimanual_carry(args, mc, task, config, m, ids, policy, encoder, bounds,
+        run_bimanual_carry(args, mc, task, config, m, ids, policy, encoder,
                            rm, arm_down, payload, figdir)
         return
 
@@ -666,7 +643,7 @@ def main():
 
     if args.view:
         print(f"\n[live view] {args.task} — {args.view_cond}  (close the window to stop)")
-        run_manip(config, m, ids, policy, encoder, bounds, side=side, rm=rm, xyz_at=xyz_at, total_s=total,
+        run_manip(config, m, ids, policy, encoder, side=side, rm=rm, xyz_at=xyz_at, total_s=total,
                   payload_kg=payload, settle_s=settle_s, load_ramp_s=ramp_s, torso=torso,
                   no_encode=(args.view_cond == "no-FAME"), live_view=True,
                   label=f"{args.view_cond} ({args.task}, {payload}kg)")
@@ -684,7 +661,7 @@ def main():
             for s in range(n_seeds):
                 seed = s if n_seeds > 1 else None
                 for lab, no_enc in [("FAME", False), ("no-FAME", True)]:
-                    mt, _ = run_manip(config, m, ids, policy, encoder, bounds, side=side, rm=rm,
+                    mt, _ = run_manip(config, m, ids, policy, encoder, side=side, rm=rm,
                                       xyz_at=xyz_at, total_s=total, payload_kg=float(kg),
                                       settle_s=settle_s, load_ramp_s=ramp_s, torso=torso,
                                       no_encode=no_enc, seed=seed, init_jitter=args.init_jitter)
@@ -717,7 +694,7 @@ def main():
         for kg in payloads:
             clips = {}; met = {}
             for lab, no_enc in [("FAME", False), ("no-FAME", True)]:
-                mt, frames = run_manip(config, m, ids, policy, encoder, bounds, side=side, rm=rm,
+                mt, frames = run_manip(config, m, ids, policy, encoder, side=side, rm=rm,
                                        xyz_at=xyz_at, total_s=total, payload_kg=float(kg),
                                        settle_s=settle_s, load_ramp_s=ramp_s, torso=torso,
                                        no_encode=no_enc, renderer=renderer, cam=cam,
@@ -742,7 +719,7 @@ def main():
         trajs = {}; clips = {}
         print(f"\n[adapt] {args.task}: ON-THE-FLY payload steps at t={[round(s, 1) for s in steps]}s")
         for lab, no_enc in [("FAME", False), ("no-FAME", True)]:
-            mt, frames = run_manip(config, m, ids, policy, encoder, bounds, side=side, rm=rm,
+            mt, frames = run_manip(config, m, ids, policy, encoder, side=side, rm=rm,
                                    xyz_at=xyz_at, total_s=total, payload_kg=0.0,
                                    payload_at=payload_at, settle_s=settle_s, load_ramp_s=ramp_s,
                                    torso=torso, no_encode=no_enc, renderer=renderer, cam=cam,
@@ -767,7 +744,7 @@ def main():
     clips = {}
     print(f"\n================ {args.task}: world-frame EE decomposition (FAME vs no-FAME) ================")
     for lab, no_enc in [("FAME", False), ("no-FAME", True)]:
-        mt, frames = run_manip(config, m, ids, policy, encoder, bounds, side=side, rm=rm, xyz_at=xyz_at,
+        mt, frames = run_manip(config, m, ids, policy, encoder, side=side, rm=rm, xyz_at=xyz_at,
                                total_s=total, payload_kg=payload, settle_s=settle_s, load_ramp_s=ramp_s,
                                torso=torso, no_encode=no_enc, renderer=renderer, cam=cam,
                                render_stride=args.render_stride,

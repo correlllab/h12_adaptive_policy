@@ -58,7 +58,7 @@ from unitree_sdk2py.idl.unitree_go.msg.dds_ import SportModeState_
 from unitree_sdk2py.utils.crc import CRC
 
 from mujoco_deploy_h12_rma import (
-    load_config, compute_observation, build_et_mujoco,
+    load_config, clip_policy_action, compute_observation, build_et_mujoco,
     get_gravity_orientation, RMA_LATENT_DIM,
 )
 from RMA.rma_modules.env_factor_encoder import EnvFactorEncoder, EnvFactorEncoderCfg
@@ -71,9 +71,9 @@ from utils import (
 
 # Topic names.
 #
-# Direct path (default — used when the safety_layer process is NOT running):
+# Direct path (default — used when the safety relay process is NOT running):
 #   TOPIC_LOWCMD = "rt/lowcmd"
-# Safety-layer path (the h12_safety_layer process MUST be running, configured
+# Safety relay path (the relay process MUST be running, configured
 # with low_cmd_in: rt/safety/lowcmd_in → low_cmd_out: rt/lowcmd):
 #   TOPIC_LOWCMD = "rt/safety/lowcmd_in"
 #
@@ -81,7 +81,7 @@ from utils import (
 # layer, the controller's commands go to a topic with no subscriber → the sim's
 # 100 ms watchdog kicks in and zeros all motor torques → robot collapses
 # silently (looks like "the policy isn't running"). Always pair the safety
-# topic with the running safety_layer process.
+# topic with the running safety relay process.
 #
 # State + odom topics come from the robot/sim directly (no safety layer in the
 # read path).
@@ -495,7 +495,7 @@ def run_manip_dds(state, publisher, cmd_msg, crc_obj, config, rm, policy, encode
                 proprio = np.concatenate(list(obs_hist), axis=0)
                 actor_obs = np.concatenate([proprio, z_flat], axis=0).astype(np.float32)
                 action = policy(torch.from_numpy(actor_obs).unsqueeze(0)).detach().numpy().squeeze()
-                target_dof_pos = action * config["action_scale"] + config["default_angles"]
+                target_dof_pos = clip_policy_action(action, config)
 
             # ── Task-end snapshot: freeze metrics + print summary; loop keeps running ──
             if step + 1 == n_steps_task and task_metrics is None:

@@ -16,7 +16,7 @@ mass's reaction during accel/decel) -> genuinely non-quasi-static. Metric = base
 swept over payload mass (kg). The EE-from-nominal error is not meaningful here (arms move on
 purpose) so base drift is the headline.
 
-Joint commands are clamped to the h12_safety_layer limits before PD control (like the live runner).
+Policy actions are clipped with the YAML limits before PD control (like deploy_real).
 
 Usage (from repo root):
   python .../sweep_rma_ablation.py --N 150 --down_hemi                       # static EE-error sweep
@@ -44,7 +44,7 @@ import mujoco
 import torch
 from mujoco_deploy_h12_rma import (
     load_config,
-    load_safety_q_clip,
+    clip_policy_action,
     pd_control,
     compute_observation,
     build_et_mujoco,
@@ -102,7 +102,6 @@ def overlay(frame, lines):
 
 def run_one(config, m, left_f, right_f, duration_s, policy, encoder,
             left_wrist_id, right_wrist_id, apply_forces, no_encode,
-            safety_clip=False, leg_q_low=None, leg_q_high=None, upper_q_low=None, upper_q_high=None,
             dynamic=False, payload_kg=0.0, arm_freq=0.5, arm_amp=1.2,
             pickplace=False, reach_pose=None, ee_ref_L=None, ee_ref_R=None, arms="both",
             renderer=None, cam=None, render_stride=20, vid_label=""):
@@ -201,8 +200,6 @@ def run_one(config, m, left_f, right_f, duration_s, policy, encoder,
             ef_left_raw, ef_right_raw = left_f, right_f
             arm_cmd = arm_base
 
-        if safety_clip:
-            target_dof_pos = np.clip(target_dof_pos, leg_q_low, leg_q_high)
         leg_tau = pd_control(target_dof_pos, d.qpos[leg_qpos_adr], config["kps"],
                              np.zeros_like(config["kps"]), d.qvel[leg_qvel_adr], config["kds"])
         leg_tau = np.clip(np.nan_to_num(leg_tau, nan=0.0, posinf=0.0, neginf=0.0), -max_tau, max_tau)
@@ -212,8 +209,6 @@ def run_one(config, m, left_f, right_f, duration_s, policy, encoder,
             kps_arm = config.get("kps_arms", np.ones(upper_h12_count, dtype=np.float32) * 500.0)
             kds_arm = config.get("kds_arms", np.ones(upper_h12_count, dtype=np.float32) * 5.0)
             arm_t = arm_cmd[:upper_h12_count]
-            if safety_clip:
-                arm_t = np.clip(arm_t, upper_q_low, upper_q_high)
             arm_tau = pd_control(arm_t, d.qpos[upper_qpos_adr], kps_arm,
                                  np.zeros(upper_h12_count), d.qvel[upper_qvel_adr], kds_arm)
             arm_tau = np.clip(np.nan_to_num(arm_tau, nan=0.0, posinf=0.0, neginf=0.0), -max_tau, max_tau)
@@ -261,7 +256,7 @@ def run_one(config, m, left_f, right_f, duration_s, policy, encoder,
             z_flat = np.flip(z_history, axis=0).flatten().astype(np.float32)
             actor_obs = np.concatenate([np.concatenate(list(obs_history), axis=0), z_flat], axis=0).astype(np.float32)
             action = policy(torch.from_numpy(actor_obs).unsqueeze(0)).detach().numpy().squeeze()
-            target_dof_pos = action * config["action_scale"] + config["default_angles"]
+            target_dof_pos = clip_policy_action(action, config)
 
     metrics = {
         "rmse_L": float(np.sqrt(sumsqL / n_acc)), "rmse_R": float(np.sqrt(sumsqR / n_acc)),
@@ -287,16 +282,7 @@ def _setup(args):
     policy = torch.jit.load(config["policy_path"]); policy.eval()
     encoder = EnvFactorEncoder(EnvFactorEncoderCfg())
     encoder.load_state_dict(torch.load(config["encoder_path"], map_location="cpu", weights_only=True)); encoder.eval()
-    # safety clamp bounds
-    safety_clip = bool(config.get("safety_clip", True))
-    bounds = dict(safety_clip=safety_clip, leg_q_low=None, leg_q_high=None, upper_q_low=None, upper_q_high=None)
-    if safety_clip:
-        lc = config["num_actions"]; hc = int(config.get("h12_ctrl_count", config.get("policy_num_joints", 27)))
-        names = [mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_JOINT, int(j)) for j in m.actuator_trnid[:hc, 0].astype(int)]
-        qlo, qhi = load_safety_q_clip(names, config.get("safety_config"))
-        bounds.update(leg_q_low=qlo[:lc], leg_q_high=qhi[:lc], upper_q_low=qlo[lc:hc], upper_q_high=qhi[lc:hc])
-        print(f"[safety] target positions clamped via h12_safety_layer ({len(names)} joints)")
-    return config, m, lwid, rwid, policy, encoder, bounds, (lwid >= 0 and rwid >= 0)
+    return config, m, lwid, rwid, policy, encoder, (lwid >= 0 and rwid >= 0)
 
 
 def make_camera():
@@ -307,7 +293,7 @@ def make_camera():
 
 def record_videos(args):
     import imageio
-    config, m, lwid, rwid, policy, encoder, bounds, apply_forces = _setup(args)
+    config, m, lwid, rwid, policy, encoder, apply_forces = _setup(args)
     print(f"[video] dynamic arms (raise/lower {args.arm_freq}Hz, amp {args.arm_amp}rad), payload {args.payload_kg}kg")
     renderer = mujoco.Renderer(m, height=args.vid_h, width=args.vid_w)
     cam = make_camera()
@@ -317,7 +303,7 @@ def record_videos(args):
                             lwid, rwid, apply_forces, no_encode=no_enc, dynamic=True,
                             payload_kg=args.payload_kg, arm_freq=args.arm_freq, arm_amp=args.arm_amp,
                             renderer=renderer, cam=cam, render_stride=args.render_stride,
-                            vid_label=DISPLAY[lab], **bounds)
+                            vid_label=DISPLAY[lab])
         path = f"{args.video}_{lab}.mp4"
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         imageio.mimwrite(path, frames, fps=args.fps, codec="libx264", quality=8)
@@ -352,7 +338,7 @@ def run_pickplace(args):
     """One pick-place demo: reach to a target pose, ramp the load on, hold. FAME vs no-FAME.
     Headline = world-frame hand error vs the reach target during the hold (FAME keeps the base
     steady so the hand stays on target; no-FAME drifts)."""
-    config, m, lwid, rwid, policy, encoder, bounds, apply_forces = _setup(args)
+    config, m, lwid, rwid, policy, encoder, apply_forces = _setup(args)
     presets = config.get("arm_pose_presets", {})
     if args.reach not in presets:
         raise SystemExit(f"--reach must be one of {list(presets)}")
@@ -368,7 +354,7 @@ def run_pickplace(args):
     clips = {}
     for lab, no_enc in CONDITIONS:
         mt, frames = run_one(config, m, np.zeros(3), np.zeros(3), args.duration, policy, encoder,
-                             lwid, rwid, apply_forces, no_encode=no_enc, **bounds,
+                             lwid, rwid, apply_forces, no_encode=no_enc,
                              pickplace=True, reach_pose=reach_pose, payload_kg=args.payload_kg, arms=args.arms,
                              ee_ref_L=eL, ee_ref_R=eR, renderer=renderer, cam=cam,
                              render_stride=args.render_stride,
@@ -397,7 +383,7 @@ ENV_CONFIGS = [("left", "Left arm"), ("right", "Right arm"), ("both", "Bimanual"
 def run_envelope(args):
     """Pick-place envelope: for left-arm / right-arm / bimanual, sweep payload and record the
     base drift e_base^W (FAME's term) + falls, FAME vs no-FAME. Writes CSV and the figure."""
-    config, m, lwid, rwid, policy, encoder, bounds, apply_forces = _setup(args)
+    config, m, lwid, rwid, policy, encoder, apply_forces = _setup(args)
     presets = config.get("arm_pose_presets", {})
     if args.reach not in presets:
         raise SystemExit(f"--reach must be one of {list(presets)}")
@@ -412,7 +398,7 @@ def run_envelope(args):
             line = f"  {arms:5s} {kg:4.1f}kg "
             for lab, no_enc in CONDITIONS:
                 mt, _ = run_one(config, m, np.zeros(3), np.zeros(3), args.duration, policy, encoder,
-                                lwid, rwid, apply_forces, no_encode=no_enc, **bounds,
+                                lwid, rwid, apply_forces, no_encode=no_enc,
                                 pickplace=True, reach_pose=reach_pose, payload_kg=float(kg), arms=arms,
                                 ee_ref_L=eL, ee_ref_R=eR)
                 rows.append((arms, float(kg), DISPLAY[lab], mt["base_rmse"], mt["base_tilt_max"], mt["fell"]))
@@ -468,7 +454,7 @@ def plot_envelope(csv_path, out_path):
 
 
 def run_sweep(args):
-    config, m, lwid, rwid, policy, encoder, bounds, apply_forces = _setup(args)
+    config, m, lwid, rwid, policy, encoder, apply_forces = _setup(args)
     rng = np.random.default_rng(args.seed)
     labels = [c[0] for c in CONDITIONS]
     res = {lab: [] for lab in labels}
@@ -491,7 +477,7 @@ def run_sweep(args):
                 if args.dynamic else dict(left_f=left_F[i], right_f=right_F[i])
             mt, _ = run_one(config, m, kw.pop("left_f", np.zeros(3)), kw.pop("right_f", np.zeros(3)),
                             args.duration, policy, encoder, lwid, rwid, apply_forces,
-                            no_encode=no_enc, **bounds, **kw)
+                            no_encode=no_enc, **kw)
             res[lab].append(mt)
             key = "base_rmse" if args.dynamic else "rmse"
             line += f" {DISPLAY[lab]}={mt[key]*100:4.1f}cm{'(fell)' if mt['fell'] else ''}"
