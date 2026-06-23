@@ -124,7 +124,7 @@ python h12_adaptive_policy/deploy/compare_plot_dds.py --fame /tmp/fame.npz --no_
         - `mujoco_deploy_h12_rma.py` — core utilities (`build_et_mujoco`, `compute_observation`, `clip_policy_action`, …) imported by every runner. Also runnable standalone for the legacy RMA demo.
         - `compare_plot_dds.py` — offline FAME-vs-no-FAME pelvis-drift comparison from `.npz` trajs.
         - `sweep_rma_ablation.py` — older FAME sweep (static / dynamic / pickplace / envelope).
-        - `single_arm_manip.yaml`, `bi_manual_carry.yaml`, `h1_2_rma_arm_magpie_fame.yaml` — task / model configs.
+        - `single_arm_manip.yaml`, `bi_manual_carry.yaml`, `h12_fame.yaml`, `h12_fame_real.yaml` — task / model configs.
     - `deploy_real/` — real-robot DDS runner (squat policy variant).
     - `utils/` — shared helpers (IK, schedule builders, plotting, recording).
     - `RMA/` — RMA-module sources, including the trained `EnvFactorEncoder`.
@@ -139,14 +139,14 @@ python h12_adaptive_policy/deploy/compare_plot_dds.py --fame /tmp/fame.npz --no_
 
 The encoder input includes the per-hand force (3D, Newtons, world frame). In sim, this is the **privileged** payload `kg * g` taken from the task YAML. For a real-robot run where the actual payload may differ from the script (or be unknown), a force estimator is needed.
 
-A scaffolding for this is in `manip_ik_demo_dds.py`:
+A YAML switch controls this in the deploy config:
 
-```python
-USE_FORCE_ESTIMATOR = False   # top of the file
+```yaml
+use_force_estimator: false
 ```
 
 - **`False`** (default): encoder is fed the commanded `kg * g`. Sufficient for sim ablations and scripted real-robot demos.
-- **`True`**: the controller will call into the (currently commented-out) inverse-dynamics estimator inside `run_manip_dds`'s `if USE_FORCE_ESTIMATOR:` branch. A reference implementation using `h12_ros2_controller`'s `RobotModel.get_frame_wrench` is included as comments; uncomment + validate before flipping the flag.
+- **`True`**: the controller estimates hand forces with `h12_ros2_controller`'s `RobotModel.get_frame_wrench` inside `run_manip_dds`.
 
 A real estimator's contract:
 - One 3-vector per hand, **world frame**, **Newtons**.
@@ -157,14 +157,14 @@ Validation note: in the DDS sim path, the controller does not inject `xfrc_appli
 
 ## System integration
 
-The `deploy_real/*.yaml` configs set the safety-layer topic (`lowcmd_topic`, the `TOPIC_LOWCMD` equivalent) to `"rt/safety/lowcmd_in"`. That is where commands are sent before an external safety layer clips/validates them and republishes to `rt/lowcmd`.
+The DDS YAML configs set the safety-layer topic (`lowcmd_topic`, the `TOPIC_LOWCMD` equivalent). For sim, `deploy/h12_fame.yaml` defaults to `"rt/lowcmd"` and includes commented safety-layer alternatives. For real-robot usage, use `deploy/h12_fame_real.yaml` or another config with `"rt/safety/lowcmd_in"` so commands are sent through an external safety layer before being republished to `rt/lowcmd`.
 
 For real-robot deployment, keep the safety layer running on the same DDS domain / network interface.
 
 ## Quick-start checklist for first real-robot run
 
 1. Pull the latest `h1_2_handless.urdf` into `h1_2/h1_2_handless.urdf`.
-2. Use a `deploy_real/*.yaml` config with `lowcmd_topic: "rt/safety/lowcmd_in"`.
+2. Use a YAML config with `lowcmd_topic: "rt/safety/lowcmd_in"`.
 3. Launch the external safety layer with conservative limits (e.g., `tight_safety_full.yaml`) and `estop.enabled: true`.
 4. Place the robot in the FAME-trained default standing pose; tether/harness for the first attempt.
 5. Run the controller with the correct network interface, e.g.:

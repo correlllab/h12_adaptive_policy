@@ -561,7 +561,7 @@ def run_bimanual_carry(args, mc, task, config, m, ids, policy, encoder,
 
 def main():
     p = argparse.ArgumentParser(description="Single-arm IK pick-place + FAME: world-EE decomposition demo")
-    p.add_argument("--config", default=os.path.join(_SCRIPT_DIR, "h1_2_rma_arm_magpie_fame.yaml"))
+    p.add_argument("--config", default=os.path.join(_SCRIPT_DIR, "h12_fame.yaml"))
     p.add_argument("--manip_yaml", default=None,
                    help="YAML path; auto-picked from --task if omitted "
                         "(single_arm_manip.yaml for *_hand_manip, bi_manual_carry.yaml for bimanual_carry).")
@@ -605,7 +605,7 @@ def main():
     oc = float(mc.get("orientation_cost", 0.0)) if mc.get("track_orientation") else 0.0
 
     # --- config / model / policy / encoder / safety ---
-    config = load_config(args.config); cdir = os.path.dirname(os.path.abspath(args.config))
+    config = load_config(args.config); cdir = config["_config_dir"]
     for k in ("policy_path", "xml_path", "encoder_path"):
         if config.get(k) and not os.path.isabs(config[k]):
             config[k] = os.path.normpath(os.path.join(cdir, config[k]))

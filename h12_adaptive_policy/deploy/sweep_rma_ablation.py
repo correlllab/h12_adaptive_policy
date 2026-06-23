@@ -269,9 +269,8 @@ def run_one(config, m, left_f, right_f, duration_s, policy, encoder,
 
 
 def _setup(args):
-    config_path = args.config if os.path.isabs(args.config) else os.path.join(_SCRIPT_DIR, args.config)
-    config = load_config(config_path)
-    cfg_dir = os.path.dirname(os.path.abspath(config_path))
+    config = load_config(args.config)
+    cfg_dir = config["_config_dir"]
     for key in ["policy_path", "xml_path", "encoder_path"]:
         if config.get(key) and not os.path.isabs(config[key]):
             config[key] = os.path.normpath(os.path.join(cfg_dir, config[key]))
@@ -528,7 +527,7 @@ def run_sweep(args):
 
 def main():
     p = argparse.ArgumentParser(description="FAME eval sweep: static (EE error) or dynamic (base drift), + videos")
-    p.add_argument("--config", type=str, default=os.path.join(_SCRIPT_DIR, "h1_2_rma_arm_magpie_fame.yaml"))
+    p.add_argument("--config", type=str, default=os.path.join(_SCRIPT_DIR, "h12_fame.yaml"))
     p.add_argument("--N", type=int, default=120)
     p.add_argument("--duration", type=float, default=6.0)
     p.add_argument("--seed", type=int, default=0)

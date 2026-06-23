@@ -69,25 +69,10 @@ from utils import (
     plot_traj, plot_summary, plot_adapt, plot_adapt_single,
 )
 
-# Topic names.
-#
-# Direct path (default — used when the safety relay process is NOT running):
-#   TOPIC_LOWCMD = "rt/lowcmd"
-# Safety relay path (the relay process MUST be running, configured
-# with low_cmd_in: rt/safety/lowcmd_in → low_cmd_out: rt/lowcmd):
-#   TOPIC_LOWCMD = "rt/safety/lowcmd_in"
-#
-# CRITICAL: if you set this to "rt/safety/lowcmd_in" but don't launch the safety
-# layer, the controller's commands go to a topic with no subscriber → the sim's
-# 100 ms watchdog kicks in and zeros all motor torques → robot collapses
-# silently (looks like "the policy isn't running"). Always pair the safety
-# topic with the running safety relay process.
-#
-# State + odom topics come from the robot/sim directly (no safety layer in the
-# read path).
-TOPIC_LOWCMD = "rt/lowcmd"
-TOPIC_LOWSTATE = "rt/lowstate"
-TOPIC_HIGHSTATE = "rt/sportmodestate"
+# YAML fallback topic names. The active values come from the deploy config.
+DEFAULT_LOW_CMD_TOPIC = "rt/lowcmd"
+DEFAULT_LOW_STATE_TOPIC = "rt/lowstate"
+DEFAULT_HIGH_STATE_TOPIC = "rt/sportmodestate"
 
 # IMU site offset in torso_link frame (from h1_2_magpie_fame.xml / h1_2.xml).
 P_IMU_IN_TORSO = np.array([-0.04452, -0.01891, 0.27756])
@@ -108,10 +93,8 @@ TORSO_MOTOR_IDX = 12  # 13th motor in the unitree HG order
 # from the task spec — exactly what the FAME training-time encoder saw. Good for
 # sim ablations.
 #
-# Flip this to True once a real force estimator (e.g. inverse-dynamics or F/T
-# sensor) is wired into the `if USE_FORCE_ESTIMATOR:` branch in run_manip_dds.
-# That gives the encoder its real-robot-style input (no privileged info).
-USE_FORCE_ESTIMATOR = False
+# YAML fallback for encoder force source. The active value comes from the deploy config.
+DEFAULT_FORCE_ESTIMATOR_ENABLED = False
 
 
 # ─── DDS state snapshot ─────────────────────────────────────────────────────
@@ -257,7 +240,7 @@ class _DataProxy:
 
 def run_manip_dds(state, publisher, cmd_msg, crc_obj, config, rm, policy, encoder, *,
                   side, xyz_at, total_s, payload_kg, settle_s, load_ramp_s, torso,
-                  no_encode, payload_at=None, label=""):
+                  no_encode, use_force_estimator, payload_at=None, label=""):
     """One DDS-driven episode. Returns (metrics_dict, traj_dict)."""
     import collections
 
@@ -377,11 +360,9 @@ def run_manip_dds(state, publisher, cmd_msg, crc_obj, config, rm, policy, encode
             F_commanded = kg_now * g   # world-frame, sign = force ON the wrist
 
             # ── Force fed to the encoder ────────────────────────────────────────────
-            # USE_FORCE_ESTIMATOR (top of module) selects the source. Default is the
+            # use_force_estimator (from YAML) selects the source. Default is the
             # privileged commanded force.
             #
-            # The `if USE_FORCE_ESTIMATOR:` branch is a STUB for a real estimator
-            # (Yutong: this is where the inverse-dynamics / F-T estimator goes).
             # Expected contract:
             #   - Returns ONE 3-vector per hand, WORLD frame, Newtons
             #   - Sign: force ON the wrist  (e.g. 2 kg hanging → ≈[0, 0, -19.6])
@@ -393,32 +374,25 @@ def run_manip_dds(state, publisher, cmd_msg, crc_obj, config, rm, policy, encode
             # joint torques don't reflect the payload, and an inverse-dynamics
             # estimator in sim will read ≈ 0 regardless of the commanded payload.
             # Validate the estimator on the real robot, or first add an xfrc DDS
-            # topic to h1_mujoco. Reference impl using h12_ros2_controller is
-            # commented out below.
-            if USE_FORCE_ESTIMATOR:
-                # TODO(yutong): replace this branch with the real estimator.
-                # Reference inverse-dynamics impl (Pinocchio-based) — kept here for
-                # convenience. In sim this currently produces near-zero output
-                # because no external wrench is applied (see NOTE above).
-                #
-                # try:
-                #     w_l = rm.get_frame_wrench(
-                #         "left_wrist_yaw_link",  q=st["q"], tau=st["tau_est"],
-                #         imu_quat=st["imu_quat"])
-                #     w_r = rm.get_frame_wrench(
-                #         "right_wrist_yaw_link", q=st["q"], tau=st["tau_est"],
-                #         imu_quat=st["imu_quat"])
-                #     ef_left  = (-w_l[:3]).astype(np.float32)   # sign: force ON wrist
-                #     ef_right = (-w_r[:3]).astype(np.float32)
-                # except Exception as exc:
-                #     if step == 0:
-                #         print(f"[force_estimator] failed: {exc}; falling back to zeros")
-                #     ef_left  = np.zeros(3, np.float32)
-                #     ef_right = np.zeros(3, np.float32)
-                raise NotImplementedError(
-                    "USE_FORCE_ESTIMATOR=True but no estimator wired in. "
-                    "Uncomment the reference impl above (or wire your own) before flipping the flag."
-                )
+            # topic to h1_mujoco.
+            if use_force_estimator:
+                robot_model = rm
+                try:
+                    left_wrench = robot_model.get_frame_wrench(
+                        "left_wrist_yaw_link", q=st["q"], tau=st["tau_est"],
+                        imu_quat=st["imu_quat"])
+                    right_wrench = robot_model.get_frame_wrench(
+                        "right_wrist_yaw_link", q=st["q"], tau=st["tau_est"],
+                        imu_quat=st["imu_quat"])
+                    # Match deploy_real's sign convention: force ON wrist.
+                    ef_left = (-left_wrench[:3]).astype(np.float32)
+                    ef_right = (-right_wrench[:3]).astype(np.float32)
+                    print(f"Estimated forces: left={ef_left}, right={ef_right}")
+                except Exception as exc:
+                    if step == 0:
+                        print(f"[force_estimator] failed: {exc}; falling back to zeros", flush=True)
+                    ef_left = np.zeros(3, np.float32)
+                    ef_right = np.zeros(3, np.float32)
             else:
                 # PRIVILEGED default: commanded payload weight, on the active side(s).
                 ef_left  = F_commanded.astype(np.float32) if side in ("left", "both") else np.zeros(3, np.float32)
@@ -533,7 +507,7 @@ def shutdown_soft(state, publisher, cmd_msg, crc_obj, n_ticks=20):
 
 def main():
     p = argparse.ArgumentParser(description="DDS-decoupled manip_ik_demo")
-    p.add_argument("--config", default=os.path.join(_SCRIPT_DIR, "h1_2_rma_arm_magpie_fame.yaml"))
+    p.add_argument("--config", default=os.path.join(_SCRIPT_DIR, "h12_fame.yaml"))
     p.add_argument("--manip_yaml", default=os.path.join(_SCRIPT_DIR, "single_arm_manip.yaml"))
     p.add_argument("--task", default="right_hand_manip",
                    choices=("right_hand_manip", "left_hand_manip"))
@@ -569,15 +543,19 @@ def main():
     oc = float(mc.get("orientation_cost", 0.0)) if mc.get("track_orientation") else 0.0
 
     config = load_config(args.config)
-    cdir = os.path.dirname(os.path.abspath(args.config))
+    cdir = config["_config_dir"]
     for k in ("policy_path", "encoder_path"):
         if config.get(k) and not os.path.isabs(config[k]):
             config[k] = os.path.normpath(os.path.join(cdir, config[k]))
     config["_arm_down"] = arm_down
+    low_cmd_topic = config.get("lowcmd_topic", DEFAULT_LOW_CMD_TOPIC)
+    low_state_topic = config.get("lowstate_topic", DEFAULT_LOW_STATE_TOPIC)
+    high_state_topic = config.get("highstate_topic", DEFAULT_HIGH_STATE_TOPIC)
+    use_force_estimator = bool(config.get("use_force_estimator", DEFAULT_FORCE_ESTIMATOR_ENABLED))
 
     # ── Pinocchio model + policy + encoder ──
-    rm = RobotModel(os.path.join(_REPO_ROOT, "h1_2/h1_2_handless.urdf"), handless=True)
-    rm.data_body = rm.model_body.createData()  # cache for FK
+    robot_model = RobotModel(os.path.join(_REPO_ROOT, "h1_2/h1_2_handless.urdf"), handless=True)
+    robot_model.data_body = robot_model.model_body.createData()  # cache for FK
 
     policy = torch.jit.load(config["policy_path"])
     policy.eval()
@@ -586,7 +564,7 @@ def main():
     encoder.eval()
 
     # IK setup print
-    sols, resid = solve_arm_waypoints(rm, side, arm_down, torso, task["waypoints"],
+    sols, resid = solve_arm_waypoints(robot_model, side, arm_down, torso, task["waypoints"],
                                       orientation_cost=oc)
     print(f"[IK] task={args.task} side={side} payload={payload}kg")
     for wp, r in zip(task["waypoints"], resid):
@@ -597,15 +575,22 @@ def main():
     # ── DDS init ──
     print(f"[dds] ChannelFactoryInitialize(id={args.dds_id}, networkInterface={args.net!r})")
     ChannelFactoryInitialize(args.dds_id, args.net) if args.net else ChannelFactoryInitialize(args.dds_id)
+    print(
+        f"[dds] topics: lowcmd={low_cmd_topic} lowstate={low_state_topic} "
+        f"highstate={high_state_topic} force_estimator={use_force_estimator}",
+        flush=True,
+    )
+
+    robot_model.init_subscriber(low_state_topic=low_state_topic)
 
     state = DDSState()
-    low_state_sub = ChannelSubscriber(TOPIC_LOWSTATE, LowStateHG)
+    low_state_sub = ChannelSubscriber(low_state_topic, LowStateHG)
     low_state_sub.Init(make_low_state_callback(state), 10)
-    high_state_sub = ChannelSubscriber(TOPIC_HIGHSTATE, SportModeState_)
+    high_state_sub = ChannelSubscriber(high_state_topic, SportModeState_)
     high_state_sub.Init(make_high_state_callback(state), 10)
 
     cmd_msg = unitree_hg_msg_dds__LowCmd_()
-    publisher = ChannelPublisher(TOPIC_LOWCMD, LowCmdHG)
+    publisher = ChannelPublisher(low_cmd_topic, LowCmdHG)
     publisher.Init()
     crc_obj = CRC()
 
@@ -625,10 +610,11 @@ def main():
     task_metrics = None
     try:
         task_metrics = run_manip_dds(
-            state, publisher, cmd_msg, crc_obj, config, rm, policy, encoder,
+            state, publisher, cmd_msg, crc_obj, config, robot_model, policy, encoder,
             side=side, xyz_at=xyz_at, total_s=total, payload_kg=payload,
             settle_s=settle_s, load_ramp_s=ramp_s, torso=torso,
-            no_encode=args.no_encode, payload_at=payload_at, label=label,
+            no_encode=args.no_encode, use_force_estimator=use_force_estimator,
+            payload_at=payload_at, label=label,
         )
     except KeyboardInterrupt:
         print("\n[ctrl] interrupted during task")

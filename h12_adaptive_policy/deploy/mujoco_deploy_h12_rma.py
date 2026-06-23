@@ -37,10 +37,37 @@ from RMA.rma_modules.env_factor_spec import HAND_FORCE_MAGNITUDE_RANGE as _HAND_
 HAND_FORCE_MAG_MAX = float(_HAND_FORCE_RANGE[1])
 
 
+def resolve_config_path(config_path):
+    """Resolve config paths, accepting absolute/relative paths or deploy filenames."""
+    config_path = os.path.expanduser(config_path)
+    candidates = [config_path]
+    if not os.path.splitext(config_path)[1]:
+        candidates.append(f"{config_path}.yaml")
+
+    for candidate in candidates:
+        if os.path.isabs(candidate):
+            resolved = candidate
+        elif os.path.dirname(candidate):
+            resolved = os.path.abspath(candidate)
+        else:
+            resolved = os.path.join(_SCRIPT_DIR, candidate)
+
+        if os.path.isfile(resolved):
+            return resolved
+
+    tried = ", ".join(candidates)
+    raise FileNotFoundError(
+        f"Config not found: {tried}. Pass a full path/relative path or a filename in {_SCRIPT_DIR}."
+    )
+
+
 def load_config(config_path):
     """Load and process the YAML configuration file (same as deploy_h12 + RMA keys)."""
+    config_path = resolve_config_path(config_path)
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
+    config["_config_path"] = config_path
+    config["_config_dir"] = os.path.dirname(config_path)
 
     for path_key in ["policy_path", "xml_path", "encoder_path"]:
         if path_key in config and config[path_key] and isinstance(config[path_key], str):
@@ -177,7 +204,7 @@ def build_et_mujoco(
 def main():
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default=os.path.join(_SCRIPT_DIR, "h1_2_rma_arm_magpie_fame.yaml"))
+    parser.add_argument("--config", type=str, default=os.path.join(_SCRIPT_DIR, "h12_fame.yaml"))
     parser.add_argument(
         "--no_encode",
         action="store_true",
@@ -191,7 +218,7 @@ def main():
         print("no_encode=True: forces applied to robot, but e_t uses zeros for encoder (naive policy test).")
 
     # Resolve relative paths relative to config file directory
-    config_dir = os.path.dirname(os.path.abspath(args.config))
+    config_dir = config["_config_dir"]
     for key in ["policy_path", "xml_path", "encoder_path"]:
         if key in config and config[key] and isinstance(config[key], str) and not os.path.isabs(config[key]):
             config[key] = os.path.normpath(os.path.join(config_dir, config[key]))
