@@ -78,11 +78,11 @@ def load_config(config_path):
         config["kps_arms"] = np.array(gains["kp"], dtype=np.float32)
         config["kds_arms"] = np.array(gains["kd"], dtype=np.float32)
 
-    array_keys = ["kps", "kds", "default_angles", "cmd_scale", "cmd_init"]
+    array_keys = ["kps", "kds", "default_lower_angles", "cmd_scale", "cmd_init"]
     if "kps_arms" in config and "kds_arms" in config:
         array_keys.extend(["kps_arms", "kds_arms"])
-    if "default_angles_arms" in config:
-        array_keys.append("default_angles_arms")
+    if "default_upper_angles" in config:
+        array_keys.append("default_upper_angles")
     if "left_hand_force" in config:
         config["left_hand_force"] = np.array(config["left_hand_force"], dtype=np.float32)
     if "right_hand_force" in config:
@@ -126,7 +126,7 @@ def clip_policy_action(action, config):
                             np.array(config["legs_motor_pos_lower_limit_list"]),
                             np.array(config["legs_motor_pos_upper_limit_list"]))
 
-    return config["default_angles"] + clipped_action
+    return config["default_lower_angles"] + clipped_action
 
 
 def compute_observation(d, config, action, cmd, height_cmd, n_joints, qj=None, dqj=None):
@@ -142,13 +142,13 @@ def compute_observation(d, config, action, cmd, height_cmd, n_joints, qj=None, d
     quat = d.qpos[3:7].copy()
     omega = d.qvel[3:6].copy()
 
-    if len(config["default_angles"]) < n_joints:
+    if len(config["default_lower_angles"]) < n_joints:
         padded_defaults = np.zeros(n_joints, dtype=np.float32)
-        padded_defaults[: len(config["default_angles"])] = config["default_angles"]
-        if "default_angles_arms" in config and n_joints >= len(config["default_angles"]) + len(config["default_angles_arms"]):
-            padded_defaults[len(config["default_angles"]) : len(config["default_angles"]) + len(config["default_angles_arms"])] = config["default_angles_arms"]
+        padded_defaults[: len(config["default_lower_angles"])] = config["default_lower_angles"]
+        if "default_upper_angles" in config and n_joints >= len(config["default_lower_angles"]) + len(config["default_upper_angles"]):
+            padded_defaults[len(config["default_lower_angles"]) : len(config["default_lower_angles"]) + len(config["default_upper_angles"])] = config["default_upper_angles"]
     else:
-        padded_defaults = config["default_angles"][:n_joints]
+        padded_defaults = config["default_lower_angles"][:n_joints]
 
     qj_scaled = (qj - padded_defaults) * config["dof_pos_scale"]
     dqj_scaled = dqj * config["dof_vel_scale"]
@@ -280,7 +280,7 @@ def main():
         print("No encoder_path or file not found; z_t will be zeros.")
 
     action = np.zeros(config["num_actions"], dtype=np.float32)
-    target_dof_pos = config["default_angles"].copy()
+    target_dof_pos = config["default_lower_angles"].copy()
     cmd = config["cmd_init"].copy()
     height_cmd = config["height_cmd"]
 
@@ -336,7 +336,7 @@ def main():
             if upper_h12_count > 0:
                 kps_arm = config.get("kps_arms", np.ones(upper_h12_count, dtype=np.float32) * 100.0)
                 kds_arm = config.get("kds_arms", np.ones(upper_h12_count, dtype=np.float32) * 5.0)
-                arm_target_positions = config.get("default_angles_arms", np.zeros(upper_h12_count, dtype=np.float32))
+                arm_target_positions = config.get("default_upper_angles", np.zeros(upper_h12_count, dtype=np.float32))
                 if len(arm_target_positions) < upper_h12_count:
                     arm_target_positions = np.zeros(upper_h12_count, dtype=np.float32)
                 arm_tau = pd_control(

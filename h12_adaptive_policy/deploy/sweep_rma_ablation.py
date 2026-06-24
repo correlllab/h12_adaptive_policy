@@ -126,13 +126,13 @@ def run_one(config, m, left_f, right_f, duration_s, policy, encoder,
 
     left_f = np.asarray(left_f, dtype=np.float32); right_f = np.asarray(right_f, dtype=np.float32)
     upper_h12_count = h12_ctrl_count - leg_count
-    arm_base = np.asarray(config.get("default_angles_arms", np.zeros(upper_h12_count, dtype=np.float32)),
+    arm_base = np.asarray(config.get("default_upper_angles", np.zeros(upper_h12_count, dtype=np.float32)),
                           dtype=np.float32).copy()
     if len(arm_base) < upper_h12_count:
         arm_base = np.zeros(upper_h12_count, dtype=np.float32)
 
     action = np.zeros(leg_count, dtype=np.float32)
-    target_dof_pos = config["default_angles"].copy()
+    target_dof_pos = config["default_lower_angles"].copy()
     cmd = config["cmd_init"].copy()
     height_cmd = float(config["height_cmd"])
 
@@ -326,7 +326,7 @@ def ee_targets(m, config, reach_pose, lwid, rwid):
     jids = m.actuator_trnid[:hc, 0].astype(np.int32)
     qadr = m.jnt_qposadr[jids].astype(np.int32)
     lc = config["num_actions"]
-    full = np.concatenate([np.asarray(config["default_angles"], dtype=float)[:lc],
+    full = np.concatenate([np.asarray(config["default_lower_angles"], dtype=float)[:lc],
                            np.asarray(reach_pose, dtype=float)])
     dref.qpos[qadr] = full
     mujoco.mj_forward(m, dref)
@@ -341,7 +341,7 @@ def run_pickplace(args):
     presets = config.get("arm_pose_presets", {})
     if args.reach not in presets:
         raise SystemExit(f"--reach must be one of {list(presets)}")
-    arm_base = np.asarray(config["default_angles_arms"], dtype=np.float32)
+    arm_base = np.asarray(config["default_upper_angles"], dtype=np.float32)
     reach_pose = np.asarray(presets[args.reach], dtype=np.float32).copy()
     reach_pose[0] = arm_base[0]  # keep the trained torso (waist) offset
     eL, eR = ee_targets(m, config, reach_pose, lwid, rwid)
@@ -386,7 +386,7 @@ def run_envelope(args):
     presets = config.get("arm_pose_presets", {})
     if args.reach not in presets:
         raise SystemExit(f"--reach must be one of {list(presets)}")
-    arm_base = np.asarray(config["default_angles_arms"], dtype=np.float32)
+    arm_base = np.asarray(config["default_upper_angles"], dtype=np.float32)
     reach_pose = np.asarray(presets[args.reach], dtype=np.float32).copy(); reach_pose[0] = arm_base[0]
     eL, eR = ee_targets(m, config, reach_pose, lwid, rwid)
     payloads = np.round(np.arange(0.5, args.payload_max + 1e-6, 0.5), 2)

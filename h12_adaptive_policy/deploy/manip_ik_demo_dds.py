@@ -243,86 +243,70 @@ class _DataProxy:
         self.qvel = np.concatenate([np.zeros(3), pelvis_omega, dq27]).astype(np.float64)
 
 
-def _start_key_pressed():
+def _get_key_pressed():
     import select
 
     try:
         ready = select.select([sys.stdin], [], [], 0.0)[0]
     except (OSError, ValueError):
-        return False
+        return None
     if not ready:
-        return False
+        return None
     try:
-        return sys.stdin.read(1).lower() == "s"
+        return sys.stdin.read(1)
     except (OSError, ValueError):
-        return False
+        return None
 
 
 def move_to_initial_pose(
     state, publisher, cmd_msg, crc_obj, ik, *, side, arm_down, torso,
-    initial_target, default_angles, leg_count, upper_n, kp_27, kd_27, dt,
+    initial_target, default_lower_angles, leg_count, upper_n, kp_27, kd_27, dt,
 ):
-    """Move all motors to the initial task pose gradually over 5s and hold until the user presses S."""
-    print(
-        "[init] moving motors to initial pose over 5s. Press S to start policy after.",
-        flush=True,
-    )
-    old_terminal_settings = None
-    if sys.stdin.isatty():
-        import termios
-        import tty
-
-        old_terminal_settings = termios.tcgetattr(sys.stdin.fileno())
-        tty.setcbreak(sys.stdin.fileno())
-
+    """Move all motors to initial task pose over 2s, then return. Returns arm_q_init."""
     # Wait for the first state update to capture current positions
     while not state.have_low_state:
         state.new_state_event.wait(0.02)
         state.new_state_event.clear()
-        
+
     st = state.snapshot()
     start_q = st["q"].copy()
-    
-    start_time = time.time()
-    duration = 5.0
+
+    print("[init] Moving to initial pose over 2s...", flush=True)
 
     arm_q_init = arm_down.copy().astype(np.float32)
-    try:
-        while True:
-            state.new_state_event.wait(timeout=0.02)
-            state.new_state_event.clear()
-            st = state.snapshot()
 
-            arm_q_init = ik.step(initial_target, dt).astype(np.float32)
-            
-            # Construct target state
-            target_q = np.zeros(N_MOTORS, dtype=np.float32)
-            target_q[:leg_count] = default_angles[:leg_count]
-            
-            upper_cmd = np.zeros(upper_n, dtype=np.float32)
-            upper_cmd[0] = torso
-            upper_cmd[ARM_SLICE[side]] = arm_q_init
-            upper_cmd[ARM_SLICE["left" if side == "right" else "right"]] = arm_down
-            target_q[leg_count:leg_count + upper_n] = upper_cmd[:upper_n]
+    # Phase 1: Interpolate over 2s
+    start_time = time.time()
+    duration = 2.0
+    pose_reached = False
 
-            # Interpolate
-            alpha = min(1.0, (time.time() - start_time) / duration)
-            q_des = (1.0 - alpha) * start_q + alpha * target_q
+    while True:
+        state.new_state_event.wait(timeout=0.02)
+        state.new_state_event.clear()
+        st = state.snapshot()
 
-            fill_low_cmd(cmd_msg, q_des=q_des, dq_des=0.0, kp=kp_27, kd=kd_27, tau=0.0)
-            send_cmd(publisher, cmd_msg, crc_obj)
+        arm_q_init = ik.step(initial_target, dt).astype(np.float32)
 
-            if _start_key_pressed():
-                if alpha < 1.0:
-                    print("[init] S pressed early; jumping to policy.", flush=True)
-                else:
-                    print("[init] S pressed; starting policy.", flush=True)
-                return arm_q_init
-    finally:
-        if old_terminal_settings is not None:
-            import termios
+        # Construct target state
+        target_q = np.zeros(N_MOTORS, dtype=np.float32)
+        target_q[:leg_count] = default_lower_angles[:leg_count]
 
-            termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old_terminal_settings)
+        upper_cmd = np.zeros(upper_n, dtype=np.float32)
+        upper_cmd[0] = torso
+        upper_cmd[ARM_SLICE[side]] = arm_q_init
+        upper_cmd[ARM_SLICE["left" if side == "right" else "right"]] = arm_down
+        target_q[leg_count:leg_count + upper_n] = upper_cmd[:upper_n]
+
+        # Interpolate
+        alpha = min(1.0, (time.time() - start_time) / duration)
+        q_des = (1.0 - alpha) * start_q + alpha * target_q
+
+        fill_low_cmd(cmd_msg, q_des=q_des, dq_des=0.0, kp=kp_27, kd=kd_27, tau=0.0)
+        send_cmd(publisher, cmd_msg, crc_obj)
+
+        if alpha >= 1.0:
+            print("[init] Initial pose reached.", flush=True)
+            return arm_q_init
 
 
 # ─── Main control loop ─────────────────────────────────────────────────────
@@ -377,7 +361,7 @@ def run_manip_dds(state, publisher, cmd_msg, crc_obj, config, rm, policy, encode
         arm_down=arm_down,
         torso=torso,
         initial_target=np.asarray(xyz_at(0.0), dtype=np.float32),
-        default_angles=np.asarray(config["default_angles"], dtype=np.float32),
+        default_lower_angles=np.asarray(config["default_lower_angles"], dtype=np.float32),
         leg_count=leg_count,
         upper_n=upper_n,
         kp_27=kp_27,
@@ -385,17 +369,41 @@ def run_manip_dds(state, publisher, cmd_msg, crc_obj, config, rm, policy, encode
         dt=dt,
     )
 
-    # ── Snapshot the nominal pelvis pose AFTER initialization / user start ──
+    # ── Snapshot the nominal pelvis pose AFTER initialization ──
     st0 = state.snapshot()
     p0, q0 = pelvis_from_imu(st0["imu_pos"], st0["imu_quat"], st0["q"][TORSO_MOTOR_IDX])
     R0 = quat2R(q0)
     print(f"[ctrl] nominal pelvis pose: p0={p0.round(3)}  q0={q0.round(3)}", flush=True)
 
+    # ── Wait for ENTER to engage lower body balancing ──
+    default_lower = np.asarray(config["default_lower_angles"], dtype=np.float32)
+    print("[init] Initial pose reached. Press ENTER to engage lower body balancing.", flush=True)
+    while True:
+        state.new_state_event.wait(timeout=0.02)
+        state.new_state_event.clear()
+        st = state.snapshot()
+
+        q_des = np.zeros(N_MOTORS, dtype=np.float32)
+        q_des[:leg_count] = default_lower[:leg_count]
+        upper_cmd = np.zeros(upper_n, dtype=np.float32)
+        upper_cmd[0] = torso
+        upper_cmd[ARM_SLICE[side]] = arm_q_hold
+        upper_cmd[ARM_SLICE["left" if side == "right" else "right"]] = arm_down
+        q_des[leg_count:leg_count + upper_n] = upper_cmd[:upper_n]
+
+        fill_low_cmd(cmd_msg, q_des=q_des, dq_des=0.0, kp=kp_27, kd=kd_27, tau=0.0)
+        send_cmd(publisher, cmd_msg, crc_obj)
+
+        key = _get_key_pressed()
+        if key is not None and key in ("\n", "\r"):
+            print("[init] ENTER pressed; lower body balancing engaged.", flush=True)
+            break
+
     policy_joints = int(config.get("policy_num_joints", N_MOTORS))
     cmd_3 = config["cmd_init"].copy()
     height_cmd = float(config["height_cmd"])
     action = np.zeros(leg_count, dtype=np.float32)
-    target_dof_pos = config["default_angles"].copy()
+    target_dof_pos = default_lower.copy()
 
     obs_hist = collections.deque(maxlen=config["obs_history_len"])
     for _ in range(config["obs_history_len"]):
@@ -437,6 +445,10 @@ def run_manip_dds(state, publisher, cmd_msg, crc_obj, config, rm, policy, encode
             "force_record": {k: np.array(v) for k, v in force_record.items()},
         }
 
+    trajectory_started = False
+    task_start_step = 0
+    print("[ctrl] Lower body balancing engaged. Press S to start arm trajectory and recording.", flush=True)
+
     try:
         for step in itertools.count():
             if not state.new_state_event.wait(timeout=0.05):
@@ -452,7 +464,15 @@ def run_manip_dds(state, publisher, cmd_msg, crc_obj, config, rm, policy, encode
             state.new_state_event.clear()
 
             st = state.snapshot()
-            t = step * dt
+
+            if not trajectory_started:
+                key = _get_key_pressed()
+                if key is not None and key.lower() == "s":
+                    print("[ctrl] S pressed; starting arm trajectory and recording.", flush=True)
+                    trajectory_started = True
+                    task_start_step = step
+
+            t = (step - task_start_step) * dt if trajectory_started else 0.0
             pelvis_c, pelvis_q = pelvis_from_imu(st["imu_pos"], st["imu_quat"], st["q"][TORSO_MOTOR_IDX])
             Rp_c = quat2R(pelvis_q)
 
@@ -502,14 +522,16 @@ def run_manip_dds(state, publisher, cmd_msg, crc_obj, config, rm, policy, encode
                 # PRIVILEGED default: commanded payload weight, on the active side(s).
                 ef_left  = F_commanded.astype(np.float32) if side in ("left", "both") else np.zeros(3, np.float32)
                 ef_right = F_commanded.astype(np.float32) if side in ("right", "both") else np.zeros(3, np.float32)
-            force_record["t"].append(t)
-            force_record["left_estimated_force"].append(ef_left.copy())
-            force_record["right_estimated_force"].append(ef_right.copy())
+
+            if trajectory_started:
+                force_record["t"].append(t)
+                force_record["left_estimated_force"].append(ef_left.copy())
+                force_record["right_estimated_force"].append(ef_right.copy())
 
             # ── IK every `decim` ticks: world-fixed target → current base frame ──
             # After the task (t > total_s), xyz_at clamps to the final waypoint, so the
             # IK just keeps the arm at the place pose while the legs balance.
-            if step % decim == 0:
+            if trajectory_started and step % decim == 0:
                 world_tgt = R0 @ xyz_at(t) + p0
                 base_tgt = Rp_c.T @ (world_tgt - pelvis_c)
                 arm_q_hold = ik.step(base_tgt, dt * decim).astype(np.float32)
@@ -529,9 +551,12 @@ def run_manip_dds(state, publisher, cmd_msg, crc_obj, config, rm, policy, encode
             # ── Metrics: pelvis drift / tilt / fall detection ──
             e_base = float(np.linalg.norm(pelvis_c[:2] - p0[:2]))
             tilt = float(np.degrees(np.arccos(np.clip(-get_gravity_orientation(pelvis_q)[2], -1, 1))))
-            ssq_base += e_base ** 2
-            max_tilt = max(max_tilt, tilt)
-            n_acc += 1
+
+            if trajectory_started:
+                ssq_base += e_base ** 2
+                max_tilt = max(max_tilt, tilt)
+                n_acc += 1
+
             if pelvis_c[2] < HEIGHT_THRESHOLD or tilt > TILT_DEG_THRESHOLD:
                 fell = True
 
@@ -541,21 +566,23 @@ def run_manip_dds(state, publisher, cmd_msg, crc_obj, config, rm, policy, encode
                 ee_w = Rp_c @ ee_b + pelvis_c
                 cmd_world = R0 @ xyz_at(t) + p0
                 dist_world = Rp_c @ xyz_at(t) + pelvis_c
-                e_ee = float(np.linalg.norm(ee_w - cmd_world))
-                e_ee_b = float(np.linalg.norm(dist_world - cmd_world))
-                ssq_ee += e_ee ** 2
-                ssq_eeb += e_ee_b ** 2
-                max_ee = max(max_ee, e_ee)
-                if step >= ss_start:
-                    ss_ee += e_ee
-                    ss_n += 1
 
-                traj["t"].append(t)
-                traj["world"].append(ee_w.copy())
-                traj["cmd_world"].append(cmd_world)
-                traj["bpos"].append(pelvis_c.copy())
-                traj["bquat"].append(pelvis_q.copy())
-                traj["load"].append(kg_now)
+                if trajectory_started:
+                    e_ee = float(np.linalg.norm(ee_w - cmd_world))
+                    e_ee_b = float(np.linalg.norm(dist_world - cmd_world))
+                    ssq_ee += e_ee ** 2
+                    ssq_eeb += e_ee_b ** 2
+                    max_ee = max(max_ee, e_ee)
+                    if (step - task_start_step) >= ss_start:
+                        ss_ee += e_ee
+                        ss_n += 1
+
+                    traj["t"].append(t)
+                    traj["world"].append(ee_w.copy())
+                    traj["cmd_world"].append(cmd_world)
+                    traj["bpos"].append(pelvis_c.copy())
+                    traj["bquat"].append(pelvis_q.copy())
+                    traj["load"].append(kg_now)
 
                 d_proxy = _DataProxy(pelvis_c, pelvis_q, st["imu_gyro"], st["q"], st["dq"])
                 single_obs, _ = compute_observation(d_proxy, config, action, cmd_3,
@@ -571,7 +598,8 @@ def run_manip_dds(state, publisher, cmd_msg, crc_obj, config, rm, policy, encode
                     z = encoder(torch.from_numpy(e_t).unsqueeze(0).float()).numpy().squeeze()
                 z_hist[1:] = z_hist[:-1]
                 z_hist[0] = z
-                traj["z"].append(float(np.linalg.norm(z)))
+                if trajectory_started:
+                    traj["z"].append(float(np.linalg.norm(z)))
 
                 z_flat = np.flip(z_hist, 0).flatten().astype(np.float32)
                 proprio = np.concatenate(list(obs_hist), axis=0)
@@ -580,7 +608,7 @@ def run_manip_dds(state, publisher, cmd_msg, crc_obj, config, rm, policy, encode
                 target_dof_pos = clip_policy_action(action, config)
 
             # ── Task-end snapshot: freeze metrics + print summary; loop keeps running ──
-            if step + 1 == n_steps_task and task_metrics is None:
+            if trajectory_started and (step - task_start_step) + 1 == n_steps_task and task_metrics is None:
                 task_metrics = _snapshot_metrics()
                 print(
                     f"  e^W_ee rmse={task_metrics['ee_rmse'] * 100:5.1f}cm "
@@ -720,6 +748,15 @@ def main():
           f"{'(adapt)' if args.adapt else ''} ================")
     label = f"{cond} ({args.task}, {payload}kg)"
     task_metrics = None
+
+    old_terminal_settings = None
+    if sys.stdin.isatty():
+        import termios
+        import tty
+
+        old_terminal_settings = termios.tcgetattr(sys.stdin.fileno())
+        tty.setcbreak(sys.stdin.fileno())
+
     try:
         task_metrics = run_manip_dds(
             state, publisher, cmd_msg, crc_obj, config, robot_model, policy, encoder,
@@ -731,6 +768,10 @@ def main():
     except KeyboardInterrupt:
         print("\n[ctrl] interrupted during task")
     finally:
+        if old_terminal_settings is not None:
+            import termios
+            termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old_terminal_settings)
+
         # Save the adapt plot before the soft-damping exit (we have task_metrics["traj"]).
         if args.adapt and task_metrics is not None and len(task_metrics["traj"]["t"]) > 0:
             out_path = args.save_plot or os.path.join(

@@ -72,7 +72,7 @@ def run_manip(config, m, ids, policy, encoder, *, side, rm, xyz_at, total_s, pay
     # nominal pelvis pose (world) -> fixed world target reference
     p0 = d.qpos[:3].copy(); R0 = quat2R(d.qpos[3:7])
     action = np.zeros(leg_count, dtype=np.float32)
-    target_dof_pos = config["default_angles"].copy()
+    target_dof_pos = config["default_lower_angles"].copy()
     cmd = config["cmd_init"].copy(); height_cmd = float(config["height_cmd"])
     arm_down = np.asarray(config.get("_arm_down"), dtype=np.float32)
     ik = ArmIK(rm, side, arm_down, torso)                       # closed-loop world-frame controller
@@ -295,7 +295,7 @@ def run_carry(config, m, ids, policy, encoder, *, rm,
 
     p0 = d.qpos[:3].copy()  # nominal pelvis position for drift measurement
     action = np.zeros(leg_count, dtype=np.float32)
-    target_dof_pos = config["default_angles"].copy()
+    target_dof_pos = config["default_lower_angles"].copy()
     cmd = config["cmd_init"].copy(); height_cmd = float(config["height_cmd"])
 
     qj = d.qpos[qadr]; dqj = d.qvel[vadr]
