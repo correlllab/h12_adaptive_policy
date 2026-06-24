@@ -34,23 +34,29 @@ def main():
     left_mag = np.linalg.norm(left_force, axis=1)
     right_mag = np.linalg.norm(right_force, axis=1)
 
-    fig, axes = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
+    fig, axes = plt.subplots(3, 1, figsize=(10, 10), sharex=True)
     labels = ["X", "Y", "Z"]
     for idx, label in enumerate(labels):
         axes[0].plot(x, left_force[:, idx], label=f"left {label}")
-        axes[0].plot(x, right_force[:, idx], "--", label=f"right {label}")
     axes[0].set_ylabel("Force (N)")
-    axes[0].set_title("Estimated End-Effector Force Components")
+    axes[0].set_title("Left Estimated Force")
     axes[0].legend(ncol=3)
     axes[0].grid(True, alpha=0.3)
 
-    axes[1].plot(x, left_mag, label="left |F|")
-    axes[1].plot(x, right_mag, label="right |F|")
-    axes[1].set_xlabel("Time (s)" if "force_time" in data else "Sample")
-    axes[1].set_ylabel("Magnitude (N)")
-    axes[1].set_title("Estimated End-Effector Force Magnitude")
-    axes[1].legend()
+    for idx, label in enumerate(labels):
+        axes[1].plot(x, right_force[:, idx], label=f"right {label}")
+    axes[1].set_ylabel("Force (N)")
+    axes[1].set_title("Right Estimated Force")
+    axes[1].legend(ncol=3)
     axes[1].grid(True, alpha=0.3)
+
+    axes[2].plot(x, left_mag, label="left |F|")
+    axes[2].plot(x, right_mag, label="right |F|")
+    axes[2].set_xlabel("Time (s)" if "force_time" in data else "Sample")
+    axes[2].set_ylabel("Magnitude (N)")
+    axes[2].set_title("Estimated End-Effector Force Magnitude")
+    axes[2].legend()
+    axes[2].grid(True, alpha=0.3)
 
     fig.tight_layout()
     if args.save:
