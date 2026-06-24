@@ -14,6 +14,12 @@ force:
   record_force: true
   record_name: "h12_fame_real_force"
 
+startup:
+  initial_move_duration_s: 2.0
+  preposition_duration_s: 2.0
+  preposition_error_tolerance_m: 0.03
+  preposition_timeout_s: 5.0
+
 # Keep RL policy interfaces fixed at H12 motor dimensions.
 policy_num_joints: 27
 h12_ctrl_count: 27

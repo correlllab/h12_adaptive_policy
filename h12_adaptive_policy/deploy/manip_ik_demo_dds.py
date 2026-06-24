@@ -35,7 +35,6 @@ import os
 import argparse
 import threading
 import time
-import yaml
 import numpy as np
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -61,6 +60,10 @@ from mujoco_deploy_h12_rma import (
     load_config, clip_policy_action, compute_observation, build_et_mujoco,
     get_gravity_orientation, RMA_LATENT_DIM,
 )
+try:
+    from .config import load_manip_config
+except ImportError:
+    from config import load_manip_config
 from RMA.rma_modules.env_factor_encoder import EnvFactorEncoder, EnvFactorEncoderCfg
 from h12_ros2_controller.core.robot_model import RobotModel
 from utils import (
@@ -259,10 +262,10 @@ def _get_key_pressed():
 
 
 def move_to_initial_pose(
-    state, publisher, cmd_msg, crc_obj, ik, *, side, arm_down, torso,
-    initial_target, default_lower_angles, leg_count, upper_n, kp_27, kd_27, dt,
+    state, publisher, cmd_msg, crc_obj, *, default_lower_angles, default_upper_angles,
+    leg_count, upper_n, kp_27, kd_27, duration_s,
 ):
-    """Move all motors to initial task pose over 2s, then return. Returns arm_q_init."""
+    """Move all motors to the deploy YAML nominal pose, then return."""
     # Wait for the first state update to capture current positions
     while not state.have_low_state:
         state.new_state_event.wait(0.02)
@@ -271,49 +274,39 @@ def move_to_initial_pose(
     st = state.snapshot()
     start_q = st["q"].copy()
 
-    print("[init] Moving to initial pose over 2s...", flush=True)
-
-    arm_q_init = arm_down.copy().astype(np.float32)
+    print(f"[init] Moving to deploy YAML nominal pose over {duration_s:.1f}s...", flush=True)
 
     # Phase 1: Interpolate over 2s
     start_time = time.time()
-    duration = 2.0
-    pose_reached = False
 
     while True:
         state.new_state_event.wait(timeout=0.02)
         state.new_state_event.clear()
         st = state.snapshot()
 
-        arm_q_init = ik.step(initial_target, dt).astype(np.float32)
-
         # Construct target state
         target_q = np.zeros(N_MOTORS, dtype=np.float32)
         target_q[:leg_count] = default_lower_angles[:leg_count]
-
-        upper_cmd = np.zeros(upper_n, dtype=np.float32)
-        upper_cmd[0] = torso
-        upper_cmd[ARM_SLICE[side]] = arm_q_init
-        upper_cmd[ARM_SLICE["left" if side == "right" else "right"]] = arm_down
-        target_q[leg_count:leg_count + upper_n] = upper_cmd[:upper_n]
+        target_q[leg_count:leg_count + upper_n] = default_upper_angles[:upper_n]
 
         # Interpolate
-        alpha = min(1.0, (time.time() - start_time) / duration)
+        alpha = min(1.0, (time.time() - start_time) / duration_s)
         q_des = (1.0 - alpha) * start_q + alpha * target_q
 
         fill_low_cmd(cmd_msg, q_des=q_des, dq_des=0.0, kp=kp_27, kd=kd_27, tau=0.0)
         send_cmd(publisher, cmd_msg, crc_obj)
 
         if alpha >= 1.0:
-            print("[init] Initial pose reached.", flush=True)
-            return arm_q_init
+            print("[init] Deploy YAML nominal pose reached.", flush=True)
+            return
 
 
 # ─── Main control loop ─────────────────────────────────────────────────────
 
 def run_manip_dds(state, publisher, cmd_msg, crc_obj, config, rm, policy, encoder, *,
-                  side, xyz_at, total_s, payload_kg, settle_s, load_ramp_s, torso,
-                  no_encode, use_force_estimator, payload_at=None, label=""):
+                  side, xyz_at, total_s, payload_kg, settle_s, load_ramp_s,
+                  no_encode, use_force_estimator, passive_arm_target=None,
+                  payload_at=None, label=""):
     """One DDS-driven episode. Returns (metrics_dict, traj_dict)."""
     import collections
 
@@ -341,9 +334,18 @@ def run_manip_dds(state, publisher, cmd_msg, crc_obj, config, rm, policy, encode
     # ── Setup IK + bookkeeping ──
     leg_count = config["num_actions"]
     upper_n = int(config.get("h12_ctrl_count", N_MOTORS)) - leg_count
-    arm_down = np.asarray(config.get("_arm_down"), dtype=np.float32)
-    ik = ArmIK(rm, side, arm_down, torso)
-    arm_q_hold = arm_down.copy().astype(np.float32)
+    default_lower = np.asarray(config["default_lower_angles"], dtype=np.float32)
+    default_upper = np.asarray(config["default_upper_angles"], dtype=np.float32)
+    upper_defaults = config["upper_body_defaults"]
+    passive_side = "left" if side == "right" else "right"
+    passive_arm_start = default_upper[ARM_SLICE[passive_side]].copy().astype(np.float32)
+    passive_arm_target = (
+        passive_arm_start.copy() if passive_arm_target is None
+        else np.asarray(passive_arm_target, dtype=np.float32).copy()
+    )
+    passive_arm_hold = passive_arm_start.copy()
+    ik = ArmIK(rm, side, upper_defaults.torso, upper_defaults.left_arm, upper_defaults.right_arm)
+    arm_q_hold = default_upper[ARM_SLICE[side]].copy().astype(np.float32)
 
     # PD gains as 27-vectors (legs use config['kps']/['kds'], upper body uses YAML gains).
     kp_27 = np.zeros(N_MOTORS, dtype=np.float32)
@@ -355,29 +357,19 @@ def run_manip_dds(state, publisher, cmd_msg, crc_obj, config, rm, policy, encode
     kp_27[leg_count:leg_count + upper_n] = kps_arms[:upper_n]
     kd_27[leg_count:leg_count + upper_n] = kds_arms[:upper_n]
 
-    arm_q_hold = move_to_initial_pose(
-        state, publisher, cmd_msg, crc_obj, ik,
-        side=side,
-        arm_down=arm_down,
-        torso=torso,
-        initial_target=np.asarray(xyz_at(0.0), dtype=np.float32),
-        default_lower_angles=np.asarray(config["default_lower_angles"], dtype=np.float32),
+    move_to_initial_pose(
+        state, publisher, cmd_msg, crc_obj,
+        default_lower_angles=default_lower,
+        default_upper_angles=default_upper,
         leg_count=leg_count,
         upper_n=upper_n,
         kp_27=kp_27,
         kd_27=kd_27,
-        dt=dt,
+        duration_s=float(config["startup_config"].initial_move_duration_s),
     )
 
-    # ── Snapshot the nominal pelvis pose AFTER initialization ──
-    st0 = state.snapshot()
-    p0, q0 = pelvis_from_imu(st0["imu_pos"], st0["imu_quat"], st0["q"][TORSO_MOTOR_IDX])
-    R0 = quat2R(q0)
-    print(f"[ctrl] nominal pelvis pose: p0={p0.round(3)}  q0={q0.round(3)}", flush=True)
-
     # ── Wait for ENTER to engage lower body balancing ──
-    default_lower = np.asarray(config["default_lower_angles"], dtype=np.float32)
-    print("[init] Initial pose reached. Press ENTER to engage lower body balancing.", flush=True)
+    print("[init] Nominal pose reached. Press ENTER to engage lower body balancing.", flush=True)
     while True:
         state.new_state_event.wait(timeout=0.02)
         state.new_state_event.clear()
@@ -385,11 +377,7 @@ def run_manip_dds(state, publisher, cmd_msg, crc_obj, config, rm, policy, encode
 
         q_des = np.zeros(N_MOTORS, dtype=np.float32)
         q_des[:leg_count] = default_lower[:leg_count]
-        upper_cmd = np.zeros(upper_n, dtype=np.float32)
-        upper_cmd[0] = torso
-        upper_cmd[ARM_SLICE[side]] = arm_q_hold
-        upper_cmd[ARM_SLICE["left" if side == "right" else "right"]] = arm_down
-        q_des[leg_count:leg_count + upper_n] = upper_cmd[:upper_n]
+        q_des[leg_count:leg_count + upper_n] = default_upper[:upper_n]
 
         fill_low_cmd(cmd_msg, q_des=q_des, dq_des=0.0, kp=kp_27, kd=kd_27, tau=0.0)
         send_cmd(publisher, cmd_msg, crc_obj)
@@ -445,9 +433,21 @@ def run_manip_dds(state, publisher, cmd_msg, crc_obj, config, rm, policy, encode
             "force_record": {k: np.array(v) for k, v in force_record.items()},
         }
 
+    startup = config["startup_config"]
     trajectory_started = False
+    preposition_started = False
+    preposition_done = False
+    preposition_start_time = None
+    preposition_start_world = None
+    preposition_goal_world = None
+    p0 = None
+    R0 = None
     task_start_step = 0
-    print("[ctrl] Lower body balancing engaged. Press S to start arm trajectory and recording.", flush=True)
+    print(
+        "[ctrl] Lower body balancing engaged. Press ENTER to preposition the active arm "
+        "to the selected task's first waypoint.",
+        flush=True,
+    )
 
     try:
         for step in itertools.count():
@@ -465,7 +465,23 @@ def run_manip_dds(state, publisher, cmd_msg, crc_obj, config, rm, policy, encode
 
             st = state.snapshot()
 
-            if not trajectory_started:
+            if not preposition_started:
+                key = _get_key_pressed()
+                if key is not None and key in ("\n", "\r"):
+                    p0, q0 = pelvis_from_imu(st["imu_pos"], st["imu_quat"], st["q"][TORSO_MOTOR_IDX])
+                    R0 = quat2R(q0)
+                    preposition_started = True
+                    preposition_start_time = time.time()
+                    ee_b0 = forward_kin_wrist_pelvis(rm, side, st["q"])
+                    preposition_start_world = R0 @ ee_b0 + p0
+                    preposition_goal_world = R0 @ xyz_at(0.0) + p0
+                    print(
+                        f"[ctrl] ENTER pressed; anchored task frame at pelvis p0={p0.round(3)}. "
+                        f"Moving {side} wrist to first waypoint {np.asarray(xyz_at(0.0)).round(3)} "
+                        f"over {startup.preposition_duration_s:.1f}s.",
+                        flush=True,
+                    )
+            elif preposition_done and not trajectory_started:
                 key = _get_key_pressed()
                 if key is not None and key.lower() == "s":
                     print("[ctrl] S pressed; starting arm trajectory and recording.", flush=True)
@@ -531,25 +547,48 @@ def run_manip_dds(state, publisher, cmd_msg, crc_obj, config, rm, policy, encode
             # ── IK every `decim` ticks: world-fixed target → current base frame ──
             # After the task (t > total_s), xyz_at clamps to the final waypoint, so the
             # IK just keeps the arm at the place pose while the legs balance.
+            if preposition_started and not preposition_done and step % decim == 0:
+                elapsed = time.time() - preposition_start_time
+                ramp = smoothstep(elapsed / max(startup.preposition_duration_s, 1e-6))
+                world_ramp_tgt = preposition_start_world + ramp * (preposition_goal_world - preposition_start_world)
+                passive_arm_hold = passive_arm_start + ramp * (passive_arm_target - passive_arm_start)
+                base_tgt = Rp_c.T @ (world_ramp_tgt - pelvis_c)
+                arm_q_hold = ik.step(base_tgt, dt * decim).astype(np.float32)
+                ee_b = forward_kin_wrist_pelvis(rm, side, st["q"])
+                ee_w = Rp_c @ ee_b + pelvis_c
+                err = float(np.linalg.norm(ee_w - preposition_goal_world))
+                ramp_done = elapsed >= startup.preposition_duration_s
+                timed_out = (time.time() - preposition_start_time) >= startup.preposition_timeout_s
+                if (ramp_done and err <= startup.preposition_error_tolerance_m) or timed_out:
+                    preposition_done = True
+                    passive_arm_hold = passive_arm_target.copy()
+                    status = "reached" if err <= startup.preposition_error_tolerance_m else "timed out"
+                    print(
+                        f"[ctrl] Arm preposition {status}: wrist error={err * 100:.1f}cm. "
+                        "Press S to start trajectory tracking and recording.",
+                        flush=True,
+                    )
+
             if trajectory_started and step % decim == 0:
                 world_tgt = R0 @ xyz_at(t) + p0
                 base_tgt = Rp_c.T @ (world_tgt - pelvis_c)
                 arm_q_hold = ik.step(base_tgt, dt * decim).astype(np.float32)
+                passive_arm_hold = passive_arm_target.copy()
 
             # ── Build the 27-DOF target vector ──
             q_des = np.zeros(N_MOTORS, dtype=np.float32)
             q_des[:leg_count] = target_dof_pos[:leg_count]
-            upper_cmd = np.zeros(15, dtype=np.float32)
-            upper_cmd[0] = torso
-            upper_cmd[ARM_SLICE[side]] = arm_q_hold
-            upper_cmd[ARM_SLICE["left" if side == "right" else "right"]] = arm_down
+            upper_cmd = default_upper.copy()
+            if preposition_started:
+                upper_cmd[ARM_SLICE[side]] = arm_q_hold
+                upper_cmd[ARM_SLICE[passive_side]] = passive_arm_hold
             q_des[leg_count:leg_count + 15] = upper_cmd
 
             fill_low_cmd(cmd_msg, q_des=q_des, dq_des=0.0, kp=kp_27, kd=kd_27, tau=0.0)
             send_cmd(publisher, cmd_msg, crc_obj)
 
             # ── Metrics: pelvis drift / tilt / fall detection ──
-            e_base = float(np.linalg.norm(pelvis_c[:2] - p0[:2]))
+            e_base = float(np.linalg.norm(pelvis_c[:2] - p0[:2])) if p0 is not None else 0.0
             tilt = float(np.degrees(np.arccos(np.clip(-get_gravity_orientation(pelvis_q)[2], -1, 1))))
 
             if trajectory_started:
@@ -564,10 +603,9 @@ def run_manip_dds(state, publisher, cmd_msg, crc_obj, config, rm, policy, encode
                 # ee_w from FK on measured joints (replaces privileged d.xpos[manip_eid]).
                 ee_b = forward_kin_wrist_pelvis(rm, side, st["q"])
                 ee_w = Rp_c @ ee_b + pelvis_c
-                cmd_world = R0 @ xyz_at(t) + p0
-                dist_world = Rp_c @ xyz_at(t) + pelvis_c
-
                 if trajectory_started:
+                    cmd_world = R0 @ xyz_at(t) + p0
+                    dist_world = Rp_c @ xyz_at(t) + pelvis_c
                     e_ee = float(np.linalg.norm(ee_w - cmd_world))
                     e_ee_b = float(np.linalg.norm(dist_world - cmd_world))
                     ssq_ee += e_ee ** 2
@@ -643,8 +681,9 @@ def shutdown_soft(state, publisher, cmd_msg, crc_obj, n_ticks=20):
 
 def main():
     p = argparse.ArgumentParser(description="DDS-decoupled manip_ik_demo")
-    p.add_argument("--config", default=os.path.join(_SCRIPT_DIR, "h12_fame.yaml"))
-    p.add_argument("--manip_yaml", default=os.path.join(_SCRIPT_DIR, "single_arm_manip.yaml"))
+    p.add_argument("--config", default=os.path.join(_SCRIPT_DIR, "h12_fame_debug.yaml"))
+    p.add_argument("--manip", default=os.path.join(_SCRIPT_DIR, "single_arm_manip.yaml"),
+                   help="Manipulation/task YAML path or deploy-directory filename")
     p.add_argument("--task", default="right_hand_manip",
                    choices=("right_hand_manip", "left_hand_manip"))
     p.add_argument("--payload_kg", type=float, default=None, help="Override YAML payload")
@@ -666,24 +705,17 @@ def main():
     args = p.parse_args()
 
     # ── Load configs ──
-    mc = yaml.safe_load(open(args.manip_yaml))
-    task = mc[args.task]
-    side = task["manip"]
-    arm_down = np.asarray(mc["arm_down"], dtype=np.float32)
-    torso = float(mc.get("torso", -0.35))
-    payload = args.payload_kg if args.payload_kg is not None else float(task.get("payload_kg", 1.0))
+    manip_config = load_manip_config(args.manip)
+    task = manip_config.task(args.task)
+    side = task.side
+    payload = args.payload_kg if args.payload_kg is not None else task.payload_kg
     settle_s = 1.0
-    seg_s = float(mc.get("seg_time_s", 1.5))
-    hold_s = float(mc.get("hold_s", 0.8))
-    ramp_s = float(mc.get("load_ramp_s", 0.8))
-    oc = float(mc.get("orientation_cost", 0.0)) if mc.get("track_orientation") else 0.0
+    seg_s = manip_config.seg_time_s
+    hold_s = manip_config.hold_s
+    ramp_s = manip_config.load_ramp_s
+    oc = manip_config.orientation_cost if manip_config.track_orientation else 0.0
 
     config = load_config(args.config)
-    cdir = config["_config_dir"]
-    for k in ("policy_path", "encoder_path"):
-        if config.get(k) and not os.path.isabs(config[k]):
-            config[k] = os.path.normpath(os.path.join(cdir, config[k]))
-    config["_arm_down"] = arm_down
     low_cmd_topic = config.get("lowcmd_topic", DEFAULT_LOW_CMD_TOPIC)
     low_state_topic = config.get("lowstate_topic", DEFAULT_LOW_STATE_TOPIC)
     high_state_topic = config.get("highstate_topic", DEFAULT_HIGH_STATE_TOPIC)
@@ -703,13 +735,17 @@ def main():
     encoder.eval()
 
     # IK setup print
-    sols, resid = solve_arm_waypoints(robot_model, side, arm_down, torso, task["waypoints"],
+    upper_defaults = config["upper_body_defaults"]
+    sols, resid = solve_arm_waypoints(
+                                      robot_model, side, upper_defaults.torso,
+                                      upper_defaults.left_arm, upper_defaults.right_arm,
+                                      task.waypoints,
                                       orientation_cost=oc)
     print(f"[IK] task={args.task} side={side} payload={payload}kg")
-    for wp, r in zip(task["waypoints"], resid):
+    for wp, r in zip(task.waypoints, resid):
         flag = "" if r < 0.01 else "  <-- UNREACHABLE (residual high)"
         print(f"   {wp['name']:6s} xyz={wp['xyz']}  IK residual={r * 1000:5.1f}mm{flag}")
-    xyz_at, total = build_xyz_schedule(task["waypoints"], settle_s, seg_s, hold_s)
+    xyz_at, total = build_xyz_schedule(task.waypoints, settle_s, seg_s, hold_s)
 
     # ── DDS init ──
     print(f"[dds] ChannelFactoryInitialize(id={args.dds_id}, networkInterface={args.net!r})")
@@ -761,8 +797,9 @@ def main():
         task_metrics = run_manip_dds(
             state, publisher, cmd_msg, crc_obj, config, robot_model, policy, encoder,
             side=side, xyz_at=xyz_at, total_s=total, payload_kg=payload,
-            settle_s=settle_s, load_ramp_s=ramp_s, torso=torso,
+            settle_s=settle_s, load_ramp_s=ramp_s,
             no_encode=args.no_encode, use_force_estimator=use_force_estimator,
+            passive_arm_target=manip_config.arm_down,
             payload_at=payload_at, label=label,
         )
     except KeyboardInterrupt:

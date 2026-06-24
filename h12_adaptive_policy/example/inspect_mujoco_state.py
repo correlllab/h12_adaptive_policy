@@ -7,7 +7,7 @@ joints and actuators.
 
 Usage:
   python inspect_mujoco_state.py
-  python inspect_mujoco_state.py --config ../deploy/h12_fame.yaml
+  python inspect_mujoco_state.py --config ../deploy/h12_fame_debug.yaml
   python inspect_mujoco_state.py --xml /path/to/model.xml
 """
 
@@ -210,7 +210,7 @@ def main():
         config_dir = config['_config_dir']
     else:
         # Try default from deploy config
-        default_config = os.path.join(_REPO_ROOT, 'h12_adaptive_policy/deploy/h12_fame.yaml')
+        default_config = os.path.join(_REPO_ROOT, 'h12_adaptive_policy/deploy/h12_fame_debug.yaml')
         if os.path.exists(default_config):
             config = load_config(default_config)
             xml_path = config.get('xml_path')

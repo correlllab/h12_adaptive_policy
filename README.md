@@ -102,7 +102,17 @@ python h12_mujoco.py                  # default scene (handless, with elastic ba
 # Terminal B: controller
 cd ~/isaac_gym_projects/h12_adaptive_policy
 python h12_adaptive_policy/deploy/manip_ik_demo_dds.py --task right_hand_manip
+# Optional: choose a different task YAML
+python h12_adaptive_policy/deploy/manip_ik_demo_dds.py --manip single_arm_manip.yaml --task left_hand_manip
 ```
+
+DDS startup is staged for safety and reproducibility:
+- On launch, the robot moves to the nominal joint pose from `--config`: `default_lower_angles` plus `default_upper_angles`.
+- First `ENTER` starts lower-body balancing while the upper body holds the config nominal pose.
+- Second `ENTER` captures the balanced pelvis pose as the world-frame anchor, then moves the active wrist to the first waypoint from `--manip` / `--task` over `startup.preposition_duration_s` seconds. If the task YAML defines `arm_down`, the passive/free arm moves to that 7-joint target over the same window.
+- `S` starts trajectory time, tracking-error computation, trajectory logging, and force recording.
+
+For `single_arm_manip.yaml`, `--task right_hand_manip` makes the right arm active and moves the left arm to top-level `arm_down`; `--task left_hand_manip` does the opposite. The active arm start target is `waypoints[0].xyz` in the selected task.
 
 After the task summary, the controller keeps the FAME leg policy running indefinitely; Ctrl-C exits with soft damping.
 
@@ -124,7 +134,7 @@ python h12_adaptive_policy/deploy/compare_plot_dds.py --fame /tmp/fame.npz --no_
         - `mujoco_deploy_h12_rma.py` — core utilities (`build_et_mujoco`, `compute_observation`, `clip_policy_action`, …) imported by every runner. Also runnable standalone for the legacy RMA demo.
         - `compare_plot_dds.py` — offline FAME-vs-no-FAME pelvis-drift comparison from `.npz` trajs.
         - `sweep_rma_ablation.py` — older FAME sweep (static / dynamic / pickplace / envelope).
-        - `single_arm_manip.yaml`, `bi_manual_carry.yaml`, `h12_fame.yaml`, `h12_fame_real.yaml` — task / model configs.
+        - `single_arm_manip.yaml`, `bi_manual_carry.yaml`, `h12_fame_debug.yaml`, `h12_fame_safety_full.yaml` — task / model configs.
     - `deploy_real/` — real-robot DDS runner (squat policy variant).
     - `utils/` — shared helpers (IK, schedule builders, plotting, recording).
     - `RMA/` — RMA-module sources, including the trained `EnvFactorEncoder`.
@@ -167,7 +177,7 @@ Validation note: in the DDS sim path, the controller does not inject `xfrc_appli
 
 ## System integration
 
-The DDS YAML configs set the safety-layer topic (`lowcmd_topic`, the `TOPIC_LOWCMD` equivalent). For sim, `deploy/h12_fame.yaml` defaults to `"rt/lowcmd"` and includes commented safety-layer alternatives. For real-robot usage, use `deploy/h12_fame_real.yaml` or another config with `"rt/safety/lowcmd_in"` so commands are sent through an external safety layer before being republished to `rt/lowcmd`.
+The DDS YAML configs set the safety-layer topic (`lowcmd_topic`, the `TOPIC_LOWCMD` equivalent). For sim, `deploy/h12_fame_debug.yaml` defaults to `"rt/lowcmd"` and includes commented safety-layer alternatives. For real-robot usage, use `deploy/h12_fame_safety_full.yaml` or another config with `"rt/safety/lowcmd_in"` so commands are sent through an external safety layer before being republished to `rt/lowcmd`.
 
 For real-robot deployment, keep the safety layer running on the same DDS domain / network interface.
 

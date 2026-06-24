@@ -1,8 +1,7 @@
 """Arm IK + waypoint/payload schedules for single-arm manipulation demos.
 
 Uses Pinocchio + Pink on a reduced (arm-only) model: the rest of the H1_2 joints
-are locked at a nominal pose (arm_down for the passive arm, torso at the trained
-offset). Used by manip_ik_demo.py to:
+are locked at explicit upper-body defaults. Used by manip_ik_demo.py to:
   - solve offline IK for a list of waypoints (solve_arm_waypoints)
   - re-solve velocity IK every control tick to track a base-frame target (ArmIK)
   - synthesize smooth schedules (build_xyz_schedule, build_payload_profile)
@@ -30,22 +29,23 @@ def _pick_solver():
     return next(s for s in _QP_SOLVERS if s in qpsolvers.available_solvers)
 
 
-def _seed_reduced_model(model_body, side, arm_down, torso):
+def _seed_reduced_model(model_body, side, torso, left_arm, right_arm):
     """Build a Pinocchio reduced model with only the manip arm free.
 
-    All other joints (passive arm, torso, legs) are locked at `arm_down` / `torso`,
-    so IK only solves the 7 manip-arm joints.
+    All other joints (passive arm, torso, legs) are locked at explicit nominal
+    values, so IK only solves the 7 manip-arm joints.
     """
     qn = pin.neutral(model_body)
+    arms = {"left": np.asarray(left_arm, dtype=float), "right": np.asarray(right_arm, dtype=float)}
     for s in ("left", "right"):
-        for jname, val in zip(ARM_JOINTS[s], arm_down):
+        for jname, val in zip(ARM_JOINTS[s], arms[s]):
             qn[model_body.joints[model_body.getJointId(jname)].idx_q] = val
     qn[model_body.joints[model_body.getJointId("torso_joint")].idx_q] = torso
     lock = [model_body.getJointId(n) for n in model_body.names[1:] if n not in ARM_JOINTS[side]]
     return pin.buildReducedModel(model_body, lock, qn)
 
 
-def solve_arm_waypoints(rm, side, arm_down, torso, waypoints, orientation_cost=0.0,
+def solve_arm_waypoints(rm, side, torso, left_arm, right_arm, waypoints, orientation_cost=0.0,
                         position_cost=50.0, posture_cost=1e-3, max_iters=800, tol_m=1e-3,
                         dt=0.05):
     """Offline IK: arm-only joint targets for each EE waypoint.
@@ -53,9 +53,10 @@ def solve_arm_waypoints(rm, side, arm_down, torso, waypoints, orientation_cost=0
     Returns ``(sols, resid)`` where ``sols`` is ``(N, 7)`` joint configs and ``resid`` is
     the per-waypoint position residual (m). Waypoints with residual > 1cm are unreachable.
     """
-    rmod = _seed_reduced_model(rm.model_body, side, arm_down, torso)
+    active_arm = left_arm if side == "left" else right_arm
+    rmod = _seed_reduced_model(rm.model_body, side, torso, left_arm, right_arm)
     rdat = rmod.createData()
-    cfg = pink.Configuration(rmod, rdat, np.asarray(arm_down, dtype=float))
+    cfg = pink.Configuration(rmod, rdat, np.asarray(active_arm, dtype=float))
     frame = f"{side}_wrist_yaw_link"
     ft = pink.tasks.FrameTask(frame, position_cost=position_cost,
                               orientation_cost=orientation_cost, lm_damping=1.0)
@@ -85,12 +86,13 @@ class ArmIK:
     so the arm actively compensates base motion to keep the hand on its world target.
     """
 
-    def __init__(self, rm, side, arm_down, torso,
+    def __init__(self, rm, side, torso, left_arm, right_arm,
                  position_cost=50.0, orientation_cost=0.0, posture_cost=1e-3):
-        self.model = _seed_reduced_model(rm.model_body, side, arm_down, torso)
+        active_arm = left_arm if side == "left" else right_arm
+        self.model = _seed_reduced_model(rm.model_body, side, torso, left_arm, right_arm)
         self.data = self.model.createData()
         self.frame = f"{side}_wrist_yaw_link"
-        self.cfg = pink.Configuration(self.model, self.data, np.asarray(arm_down, float))
+        self.cfg = pink.Configuration(self.model, self.data, np.asarray(active_arm, float))
         self.ft = pink.tasks.FrameTask(self.frame, position_cost=position_cost,
                                        orientation_cost=orientation_cost, lm_damping=1.0)
         self.pt = pink.tasks.PostureTask(cost=posture_cost)

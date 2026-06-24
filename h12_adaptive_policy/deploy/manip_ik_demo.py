@@ -16,7 +16,6 @@ import os
 import argparse
 import collections
 import time
-import yaml
 import numpy as np
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -32,6 +31,10 @@ from mujoco_deploy_h12_rma import (
     load_config, clip_policy_action, pd_control, compute_observation,
     build_et_mujoco, get_gravity_orientation, RMA_LATENT_DIM,
 )
+try:
+    from .config import load_manip_config
+except ImportError:
+    from config import load_manip_config
 from RMA.rma_modules.env_factor_encoder import EnvFactorEncoder, EnvFactorEncoderCfg
 from h12_ros2_controller.core.robot_model import RobotModel
 from utils import (
@@ -74,9 +77,11 @@ def run_manip(config, m, ids, policy, encoder, *, side, rm, xyz_at, total_s, pay
     action = np.zeros(leg_count, dtype=np.float32)
     target_dof_pos = config["default_lower_angles"].copy()
     cmd = config["cmd_init"].copy(); height_cmd = float(config["height_cmd"])
-    arm_down = np.asarray(config.get("_arm_down"), dtype=np.float32)
-    ik = ArmIK(rm, side, arm_down, torso)                       # closed-loop world-frame controller
-    arm_q_hold = np.asarray(arm_down, dtype=np.float32).copy()  # latest IK solution (held between control ticks)
+    default_upper = np.asarray(config["default_upper_angles"], dtype=np.float32)
+    upper_defaults = config["upper_body_defaults"]
+    passive_side = "left" if side == "right" else "right"
+    ik = ArmIK(rm, side, upper_defaults.torso, upper_defaults.left_arm, upper_defaults.right_arm)
+    arm_q_hold = default_upper[ARM_SLICE[side]].copy()  # latest IK solution (held between control ticks)
 
     qj = d.qpos[qadr]; dqj = d.qvel[vadr]
     sobs, _ = compute_observation(d, config, action, cmd, height_cmd, policy_joints, qj=qj, dqj=dqj)
@@ -116,10 +121,9 @@ def run_manip(config, m, ids, policy, encoder, *, side, rm, xyz_at, total_s, pay
             world_tgt = R0 @ xyz_at(t) + p0
             base_tgt = Rp_c.T @ (world_tgt - pelvis_c)
             arm_q_hold = ik.step(base_tgt, dt * decim).astype(np.float32)
-        arm_cmd = np.zeros(upper_n, dtype=np.float32)
-        arm_cmd[0] = torso
+        arm_cmd = default_upper[:upper_n].copy()
         arm_cmd[ARM_SLICE[side]] = arm_q_hold
-        arm_cmd[ARM_SLICE["left" if side == "right" else "right"]] = arm_down
+        arm_cmd[ARM_SLICE[passive_side]] = default_upper[ARM_SLICE[passive_side]]
 
         leg_tau = pd_control(target_dof_pos, d.qpos[leg_qadr], config["kps"],
                              np.zeros_like(config["kps"]), d.qvel[leg_vadr], config["kds"])
@@ -435,7 +439,7 @@ def run_carry(config, m, ids, policy, encoder, *, rm,
 
 
 def run_bimanual_carry(args, mc, task, config, m, ids, policy, encoder,
-                       rm, arm_down, payload, figdir):
+                       rm, upper_defaults, payload, figdir):
     """Top-level dispatch for the bimanual carry task. Solves bimanual IK once at the
     initial torso, runs FAME and no-FAME conditions back-to-back, saves the comparison plot.
     """
@@ -453,9 +457,11 @@ def run_bimanual_carry(args, mc, task, config, m, ids, policy, encoder,
     wps_left = [{"name": "carry", "xyz": carry_pose["left"]}]
     wps_right = [{"name": "carry", "xyz": carry_pose["right"]}]
     oc = float(mc.get("orientation_cost", 0.0)) if mc.get("track_orientation") else 0.0
-    sols_l, resid_l = solve_arm_waypoints(rm, "left", arm_down, torso_t0, wps_left,
+    sols_l, resid_l = solve_arm_waypoints(rm, "left", torso_t0,
+                                          upper_defaults.left_arm, upper_defaults.right_arm, wps_left,
                                           orientation_cost=oc)
-    sols_r, resid_r = solve_arm_waypoints(rm, "right", arm_down, torso_t0, wps_right,
+    sols_r, resid_r = solve_arm_waypoints(rm, "right", torso_t0,
+                                          upper_defaults.left_arm, upper_defaults.right_arm, wps_right,
                                           orientation_cost=oc)
     left_arm_q = sols_l[0].astype(np.float32)
     right_arm_q = sols_r[0].astype(np.float32)
@@ -561,8 +567,8 @@ def run_bimanual_carry(args, mc, task, config, m, ids, policy, encoder,
 
 def main():
     p = argparse.ArgumentParser(description="Single-arm IK pick-place + FAME: world-EE decomposition demo")
-    p.add_argument("--config", default=os.path.join(_SCRIPT_DIR, "h12_fame.yaml"))
-    p.add_argument("--manip_yaml", default=None,
+    p.add_argument("--config", default=os.path.join(_SCRIPT_DIR, "h12_fame_debug.yaml"))
+    p.add_argument("--manip", default=None,
                    help="YAML path; auto-picked from --task if omitted "
                         "(single_arm_manip.yaml for *_hand_manip, bi_manual_carry.yaml for bimanual_carry).")
     p.add_argument("--task", default="right_hand_manip",
@@ -588,28 +594,26 @@ def main():
     args = p.parse_args()
 
     # Auto-pick the yaml based on --task if not provided
-    if args.manip_yaml is None:
+    if args.manip is None:
         if args.task == "bimanual_carry":
-            args.manip_yaml = os.path.join(_SCRIPT_DIR, "bi_manual_carry.yaml")
+            args.manip = os.path.join(_SCRIPT_DIR, "bi_manual_carry.yaml")
         else:
-            args.manip_yaml = os.path.join(_SCRIPT_DIR, "single_arm_manip.yaml")
+            args.manip = os.path.join(_SCRIPT_DIR, "single_arm_manip.yaml")
 
-    mc = yaml.safe_load(open(args.manip_yaml))
+    manip_config = load_manip_config(args.manip)
+    mc = manip_config.data
     task = mc[args.task]; side = task["manip"]
-    arm_down = np.asarray(mc["arm_down"], dtype=np.float32); torso = float(mc.get("torso", -0.35))
     payload = args.payload_kg if args.payload_kg is not None else float(task.get("payload_kg", 1.0))
-    settle_s, seg_s, hold_s, ramp_s = (float(mc.get(k, v)) for k, v in
-                                       [("load_ramp_s", 0.8), ("seg_time_s", 1.5),
-                                        ("hold_s", 0.8), ("load_ramp_s", 0.8)])
+    seg_s = manip_config.seg_time_s
+    hold_s = manip_config.hold_s
+    ramp_s = manip_config.load_ramp_s
     settle_s = 1.0
-    oc = float(mc.get("orientation_cost", 0.0)) if mc.get("track_orientation") else 0.0
+    oc = manip_config.orientation_cost if manip_config.track_orientation else 0.0
 
     # --- config / model / policy / encoder / safety ---
-    config = load_config(args.config); cdir = config["_config_dir"]
-    for k in ("policy_path", "xml_path", "encoder_path"):
-        if config.get(k) and not os.path.isabs(config[k]):
-            config[k] = os.path.normpath(os.path.join(cdir, config[k]))
-    config["_arm_down"] = arm_down
+    config = load_config(args.config)
+    upper_defaults = config["upper_body_defaults"]
+    torso = upper_defaults.torso
     m = mujoco.MjModel.from_xml_path(config["xml_path"]); m.opt.timestep = config["simulation_dt"]
     ids = {"left_wrist":  mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "left_wrist_roll_link"),
            "right_wrist": mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "right_wrist_roll_link"),
@@ -630,11 +634,13 @@ def main():
     # =============================================================================================
     if args.task == "bimanual_carry":
         run_bimanual_carry(args, mc, task, config, m, ids, policy, encoder,
-                           rm, arm_down, payload, figdir)
+                           rm, upper_defaults, payload, figdir)
         return
 
     # --- IK: arm joint waypoints for the EE targets (single-arm path) ---
-    sols, resid = solve_arm_waypoints(rm, side, arm_down, torso, task["waypoints"], orientation_cost=oc)
+    sols, resid = solve_arm_waypoints(rm, side, torso,
+                                      upper_defaults.left_arm, upper_defaults.right_arm,
+                                      task["waypoints"], orientation_cost=oc)
     print(f"[IK] task={args.task} side={side} payload={payload}kg")
     for wp, r in zip(task["waypoints"], resid):
         flag = "" if r < 0.01 else "  <-- UNREACHABLE (residual high)"

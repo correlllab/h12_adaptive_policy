@@ -8,7 +8,6 @@ import sys
 import os
 import time
 import collections
-import yaml
 import torch
 import numpy as np
 import mujoco
@@ -36,61 +35,10 @@ H12_POLICY_JOINTS = 27
 from RMA.rma_modules.env_factor_spec import HAND_FORCE_MAGNITUDE_RANGE as _HAND_FORCE_RANGE
 HAND_FORCE_MAG_MAX = float(_HAND_FORCE_RANGE[1])
 
-
-def resolve_config_path(config_path):
-    """Resolve config paths, accepting absolute/relative paths or deploy filenames."""
-    config_path = os.path.expanduser(config_path)
-    candidates = [config_path]
-    if not os.path.splitext(config_path)[1]:
-        candidates.append(f"{config_path}.yaml")
-
-    for candidate in candidates:
-        if os.path.isabs(candidate):
-            resolved = candidate
-        elif os.path.dirname(candidate):
-            resolved = os.path.abspath(candidate)
-        else:
-            resolved = os.path.join(_SCRIPT_DIR, candidate)
-
-        if os.path.isfile(resolved):
-            return resolved
-
-    tried = ", ".join(candidates)
-    raise FileNotFoundError(
-        f"Config not found: {tried}. Pass a full path/relative path or a filename in {_SCRIPT_DIR}."
-    )
-
-
-def load_config(config_path):
-    """Load and process the YAML configuration file (same as deploy_h12 + RMA keys)."""
-    config_path = resolve_config_path(config_path)
-    with open(config_path, "r") as f:
-        config = yaml.safe_load(f)
-    config["_config_path"] = config_path
-    config["_config_dir"] = os.path.dirname(config_path)
-
-    for path_key in ["policy_path", "xml_path", "encoder_path"]:
-        if path_key in config and config[path_key] and isinstance(config[path_key], str):
-            config[path_key] = config[path_key]
-
-    if "upper_body_pd_gains" in config:
-        gains = config["upper_body_pd_gains"]
-        config["kps_arms"] = np.array(gains["kp"], dtype=np.float32)
-        config["kds_arms"] = np.array(gains["kd"], dtype=np.float32)
-
-    array_keys = ["kps", "kds", "default_lower_angles", "cmd_scale", "cmd_init"]
-    if "kps_arms" in config and "kds_arms" in config:
-        array_keys.extend(["kps_arms", "kds_arms"])
-    if "default_upper_angles" in config:
-        array_keys.append("default_upper_angles")
-    if "left_hand_force" in config:
-        config["left_hand_force"] = np.array(config["left_hand_force"], dtype=np.float32)
-    if "right_hand_force" in config:
-        config["right_hand_force"] = np.array(config["right_hand_force"], dtype=np.float32)
-    for key in array_keys:
-        if key in config:
-            config[key] = np.array(config[key], dtype=np.float32)
-    return config
+try:
+    from .config import load_config, resolve_config_path
+except ImportError:
+    from config import load_config, resolve_config_path
 
 
 def pd_control(target_q, q, kp, target_dq, dq, kd):
@@ -209,7 +157,7 @@ def build_et_mujoco(
 def main():
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default=os.path.join(_SCRIPT_DIR, "h12_fame.yaml"))
+    parser.add_argument("--config", type=str, default=os.path.join(_SCRIPT_DIR, "h12_fame_debug.yaml"))
     parser.add_argument(
         "--no_encode",
         action="store_true",
@@ -221,12 +169,6 @@ def main():
     no_encode = args.no_encode or config.get("no_encode", False)
     if no_encode:
         print("no_encode=True: forces applied to robot, but e_t uses zeros for encoder (naive policy test).")
-
-    # Resolve relative paths relative to config file directory
-    config_dir = config["_config_dir"]
-    for key in ["policy_path", "xml_path", "encoder_path"]:
-        if key in config and config[key] and isinstance(config[key], str) and not os.path.isabs(config[key]):
-            config[key] = os.path.normpath(os.path.join(config_dir, config[key]))
 
     m = mujoco.MjModel.from_xml_path(config["xml_path"])
     d = mujoco.MjData(m)
