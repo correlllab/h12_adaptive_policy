@@ -440,6 +440,9 @@ def run_manip_dds(state, publisher, cmd_msg, crc_obj, config, rm, policy, encode
     preposition_start_time = None
     preposition_start_world = None
     preposition_goal_world = None
+    trajectory_blend_start_time = None
+    trajectory_blend_active_start = None
+    trajectory_blend_passive_start = None
     p0 = None
     R0 = None
     task_start_step = 0
@@ -484,11 +487,24 @@ def run_manip_dds(state, publisher, cmd_msg, crc_obj, config, rm, policy, encode
             elif preposition_done and not trajectory_started:
                 key = _get_key_pressed()
                 if key is not None and key.lower() == "s":
-                    print("[ctrl] S pressed; starting arm trajectory and recording.", flush=True)
+                    trajectory_blend_start_time = time.time()
+                    trajectory_blend_active_start = arm_q_hold.copy()
+                    trajectory_blend_passive_start = passive_arm_hold.copy()
+                    print(
+                        f"[ctrl] S pressed; blending into trajectory over "
+                        f"{startup.trajectory_start_blend_s:.1f}s, then recording advances normally.",
+                        flush=True,
+                    )
                     trajectory_started = True
                     task_start_step = step
 
-            t = (step - task_start_step) * dt if trajectory_started else 0.0
+            raw_t = (step - task_start_step) * dt if trajectory_started else 0.0
+            blend_s = max(startup.trajectory_start_blend_s, 0.0)
+            if trajectory_started and raw_t < blend_s:
+                t = 0.0
+            else:
+                t = max(0.0, raw_t - blend_s) if trajectory_started else 0.0
+            recording_active = trajectory_started and raw_t >= blend_s
             pelvis_c, pelvis_q = pelvis_from_imu(st["imu_pos"], st["imu_quat"], st["q"][TORSO_MOTOR_IDX])
             Rp_c = quat2R(pelvis_q)
 
@@ -539,7 +555,7 @@ def run_manip_dds(state, publisher, cmd_msg, crc_obj, config, rm, policy, encode
                 ef_left  = F_commanded.astype(np.float32) if side in ("left", "both") else np.zeros(3, np.float32)
                 ef_right = F_commanded.astype(np.float32) if side in ("right", "both") else np.zeros(3, np.float32)
 
-            if trajectory_started:
+            if recording_active:
                 force_record["t"].append(t)
                 force_record["left_estimated_force"].append(ef_left.copy())
                 force_record["right_estimated_force"].append(ef_right.copy())
@@ -572,8 +588,14 @@ def run_manip_dds(state, publisher, cmd_msg, crc_obj, config, rm, policy, encode
             if trajectory_started and step % decim == 0:
                 world_tgt = R0 @ xyz_at(t) + p0
                 base_tgt = Rp_c.T @ (world_tgt - pelvis_c)
-                arm_q_hold = ik.step(base_tgt, dt * decim).astype(np.float32)
-                passive_arm_hold = passive_arm_target.copy()
+                arm_q_traj = ik.step(base_tgt, dt * decim).astype(np.float32)
+                if raw_t < blend_s and blend_s > 1e-6:
+                    blend = smoothstep(raw_t / blend_s)
+                    arm_q_hold = trajectory_blend_active_start + blend * (arm_q_traj - trajectory_blend_active_start)
+                    passive_arm_hold = trajectory_blend_passive_start + blend * (passive_arm_target - trajectory_blend_passive_start)
+                else:
+                    arm_q_hold = arm_q_traj
+                    passive_arm_hold = passive_arm_target.copy()
 
             # ── Build the 27-DOF target vector ──
             q_des = np.zeros(N_MOTORS, dtype=np.float32)
@@ -591,7 +613,7 @@ def run_manip_dds(state, publisher, cmd_msg, crc_obj, config, rm, policy, encode
             e_base = float(np.linalg.norm(pelvis_c[:2] - p0[:2])) if p0 is not None else 0.0
             tilt = float(np.degrees(np.arccos(np.clip(-get_gravity_orientation(pelvis_q)[2], -1, 1))))
 
-            if trajectory_started:
+            if recording_active:
                 ssq_base += e_base ** 2
                 max_tilt = max(max_tilt, tilt)
                 n_acc += 1
@@ -603,7 +625,7 @@ def run_manip_dds(state, publisher, cmd_msg, crc_obj, config, rm, policy, encode
                 # ee_w from FK on measured joints (replaces privileged d.xpos[manip_eid]).
                 ee_b = forward_kin_wrist_pelvis(rm, side, st["q"])
                 ee_w = Rp_c @ ee_b + pelvis_c
-                if trajectory_started:
+                if recording_active:
                     cmd_world = R0 @ xyz_at(t) + p0
                     dist_world = Rp_c @ xyz_at(t) + pelvis_c
                     e_ee = float(np.linalg.norm(ee_w - cmd_world))
@@ -611,7 +633,7 @@ def run_manip_dds(state, publisher, cmd_msg, crc_obj, config, rm, policy, encode
                     ssq_ee += e_ee ** 2
                     ssq_eeb += e_ee_b ** 2
                     max_ee = max(max_ee, e_ee)
-                    if (step - task_start_step) >= ss_start:
+                    if t >= max(0.0, total_s - 1.0):
                         ss_ee += e_ee
                         ss_n += 1
 
@@ -636,7 +658,7 @@ def run_manip_dds(state, publisher, cmd_msg, crc_obj, config, rm, policy, encode
                     z = encoder(torch.from_numpy(e_t).unsqueeze(0).float()).numpy().squeeze()
                 z_hist[1:] = z_hist[:-1]
                 z_hist[0] = z
-                if trajectory_started:
+                if recording_active:
                     traj["z"].append(float(np.linalg.norm(z)))
 
                 z_flat = np.flip(z_hist, 0).flatten().astype(np.float32)
@@ -646,7 +668,7 @@ def run_manip_dds(state, publisher, cmd_msg, crc_obj, config, rm, policy, encode
                 target_dof_pos = clip_policy_action(action, config)
 
             # ── Task-end snapshot: freeze metrics + print summary; loop keeps running ──
-            if trajectory_started and (step - task_start_step) + 1 == n_steps_task and task_metrics is None:
+            if recording_active and t + dt >= total_s and task_metrics is None:
                 task_metrics = _snapshot_metrics()
                 print(
                     f"  e^W_ee rmse={task_metrics['ee_rmse'] * 100:5.1f}cm "

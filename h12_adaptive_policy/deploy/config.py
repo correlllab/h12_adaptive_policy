@@ -25,6 +25,7 @@ class ForceConfig:
 class StartupConfig:
     initial_move_duration_s: float
     preposition_duration_s: float
+    trajectory_start_blend_s: float
     preposition_error_tolerance_m: float
     preposition_timeout_s: float
 
@@ -244,7 +245,8 @@ def _validate_deploy_config(config: dict[str, Any]) -> None:
     if "startup" not in config:
         raise ValueError(f"{config['_config_path']}: missing required field startup")
     startup = config["startup"]
-    for key in ("initial_move_duration_s", "preposition_duration_s", "preposition_error_tolerance_m", "preposition_timeout_s"):
+    startup.setdefault("trajectory_start_blend_s", startup["preposition_duration_s"])
+    for key in ("initial_move_duration_s", "preposition_duration_s", "trajectory_start_blend_s", "preposition_error_tolerance_m", "preposition_timeout_s"):
         if key not in startup:
             raise ValueError(f"{config['_config_path']}: missing required field startup.{key}")
 

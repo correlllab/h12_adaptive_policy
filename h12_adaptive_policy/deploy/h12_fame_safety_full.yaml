@@ -17,6 +17,7 @@ force:
 startup:
   initial_move_duration_s: 2.0
   preposition_duration_s: 2.0
+  trajectory_start_blend_s: 2.0
   preposition_error_tolerance_m: 0.03
   preposition_timeout_s: 5.0
 
