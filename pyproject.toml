@@ -36,6 +36,14 @@ dependencies = [
     "unitree_sdk2py",
 ]
 
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["h12_adaptive_policy", "h12_adaptive_policy.*"]
+namespaces = true
+
 [tool.uv]
 package = false
 required-environments = [
