@@ -5,7 +5,8 @@ control_dt: 0.02
 msg_type: "hg"
 imu_type: "torso"
 
-lowcmd_topic: "rt/lowcmd"
+# lowcmd_topic: "rt/lowcmd"            # direct to robot (bypasses safety layer)
+lowcmd_topic: "rt/safety/lowcmd_in"    # -> safety relay -> rt/lowcmd
 lowstate_topic: "rt/lowstate"
 
 leg_joint2motor_idx: [0, 1, 2, 3, 4, 5,
@@ -42,9 +43,9 @@ legs_motor_pos_upper_limit_list: [0.43, 2.5, 3.14, 2.05, 0.523598, 0.261799,
 num_dofs: 27
 num_actions: 12
 
-# RMA policy + encoder (reuse Mujoco weights)
-policy_path: "data/rma_hand/policy.pt"
-encoder_path: "data/rma_hand/encoder_3999.pt"
+# RMA policy + encoder (new FAME magpie run, step 3600)
+policy_path: "h12_adaptive_policy/fame_policy/policy_3600.pt"
+encoder_path: "h12_adaptive_policy/fame_policy/encoder_3600.pt"
 
 network:
   domain_id: 1

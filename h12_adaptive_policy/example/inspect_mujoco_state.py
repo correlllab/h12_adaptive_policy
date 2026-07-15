@@ -7,7 +7,7 @@ joints and actuators.
 
 Usage:
   python inspect_mujoco_state.py
-  python inspect_mujoco_state.py --config ../deploy/h1_2_rma_arm.yaml
+  python inspect_mujoco_state.py --config ../deploy/h12_fame_debug.yaml
   python inspect_mujoco_state.py --xml /path/to/model.xml
 """
 
@@ -22,14 +22,41 @@ if _SCRIPT_DIR not in sys.path:
 _REPO_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, "../.."))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
+_DEPLOY_DIR = os.path.join(_REPO_ROOT, 'h12_adaptive_policy', 'deploy')
 
 import mujoco
+
+def resolve_config_path(config_path):
+    """Resolve absolute/relative config paths or filenames from deploy/."""
+    config_path = os.path.expanduser(config_path)
+    candidates = [config_path]
+    if not os.path.splitext(config_path)[1]:
+        candidates.append(f'{config_path}.yaml')
+
+    for candidate in candidates:
+        if os.path.isabs(candidate):
+            resolved = candidate
+        elif os.path.dirname(candidate):
+            resolved = os.path.abspath(candidate)
+        else:
+            resolved = os.path.join(_DEPLOY_DIR, candidate)
+        if os.path.isfile(resolved):
+            return resolved
+
+    tried = ', '.join(candidates)
+    raise FileNotFoundError(
+        f"Config not found: {tried}. Pass a full path/relative path or a filename in {_DEPLOY_DIR}."
+    )
 
 def load_config(config_path):
     """Load YAML config file."""
     import yaml
+    config_path = resolve_config_path(config_path)
     with open(config_path, 'r') as f:
-        return yaml.safe_load(f)
+        config = yaml.safe_load(f)
+    config['_config_path'] = config_path
+    config['_config_dir'] = os.path.dirname(config_path)
+    return config
 
 def inspect_model(xml_path):
     """Load MuJoCo model and inspect qpos/ctrl mappings."""
@@ -174,19 +201,20 @@ def main():
     args = parser.parse_args()
 
     xml_path = None
+    config_dir = None
     if args.xml:
         xml_path = args.xml
     elif args.config:
-        config_path = args.config if os.path.isabs(args.config) else \
-                     os.path.join(_REPO_ROOT, args.config)
-        config = load_config(config_path)
+        config = load_config(args.config)
         xml_path = config.get('xml_path')
+        config_dir = config['_config_dir']
     else:
         # Try default from deploy config
-        default_config = os.path.join(_REPO_ROOT, 'h12_adaptive_policy/deploy/h1_2_rma_arm.yaml')
+        default_config = os.path.join(_REPO_ROOT, 'h12_adaptive_policy/deploy/h12_fame_debug.yaml')
         if os.path.exists(default_config):
             config = load_config(default_config)
             xml_path = config.get('xml_path')
+            config_dir = config['_config_dir']
 
     if xml_path is None:
         print("Error: Could not find XML path. Specify via --xml or --config")
@@ -194,7 +222,8 @@ def main():
 
     # Resolve relative paths
     if not os.path.isabs(xml_path):
-        xml_path = os.path.normpath(os.path.join(_REPO_ROOT, xml_path))
+        base_dir = config_dir if config_dir is not None else _REPO_ROOT
+        xml_path = os.path.normpath(os.path.join(base_dir, xml_path))
 
     if not os.path.exists(xml_path):
         print(f"Error: XML file not found: {xml_path}")

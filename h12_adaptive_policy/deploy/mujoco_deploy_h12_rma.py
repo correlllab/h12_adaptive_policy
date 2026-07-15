@@ -8,7 +8,6 @@ import sys
 import os
 import time
 import collections
-import yaml
 import torch
 import numpy as np
 import mujoco
@@ -28,29 +27,18 @@ RMA_ACTOR_Z_DIM = 24   # 3 * 8
 RMA_ET_DIM = 21        # 15 upper dof + left_xyz(3) + right_xyz(3), hand-only
 H12_POLICY_JOINTS = 27
 
+# The encoder was trained on hand forces of magnitude U(0, HAND_FORCE_MAG_MAX) per hand
+# (see RMA.rma_modules.env_factor_spec). Forces beyond this are out-of-distribution for the
+# encoder and degrade the latent (unseen states -> bad z_t). So the force fed into e_t is
+# clipped to this magnitude, direction preserved. The physical force applied to the sim is
+# unchanged — only what the encoder "sees" is clamped to the trained envelope.
+from RMA.rma_modules.env_factor_spec import HAND_FORCE_MAGNITUDE_RANGE as _HAND_FORCE_RANGE
+HAND_FORCE_MAG_MAX = float(_HAND_FORCE_RANGE[1])
 
-def load_config(config_path):
-    """Load and process the YAML configuration file (same as deploy_h12 + RMA keys)."""
-    with open(config_path, "r") as f:
-        config = yaml.safe_load(f)
-
-    for path_key in ["policy_path", "xml_path", "encoder_path"]:
-        if path_key in config and config[path_key] and isinstance(config[path_key], str):
-            config[path_key] = config[path_key]
-
-    array_keys = ["kps", "kds", "default_angles", "cmd_scale", "cmd_init"]
-    if "kps_arms" in config:
-        array_keys.extend(["kps_arms", "kds_arms"])
-    if "default_angles_arms" in config:
-        array_keys.append("default_angles_arms")
-    if "left_hand_force" in config:
-        config["left_hand_force"] = np.array(config["left_hand_force"], dtype=np.float32)
-    if "right_hand_force" in config:
-        config["right_hand_force"] = np.array(config["right_hand_force"], dtype=np.float32)
-    for key in array_keys:
-        if key in config:
-            config[key] = np.array(config[key], dtype=np.float32)
-    return config
+try:
+    from .config import load_config, resolve_config_path
+except ImportError:
+    from config import load_config, resolve_config_path
 
 
 def pd_control(target_q, q, kp, target_dq, dq, kd):
@@ -77,6 +65,18 @@ def get_gravity_orientation(quat):
     return quat_rotate_inverse(quat, np.array([0.0, 0.0, -1.0]))
 
 
+def clip_policy_action(action, config):
+    """Apply the same YAML-driven leg action clipping used by deploy_real."""
+    scaled_action = action * config["action_scale"]
+
+    clipped_action = np.clip(
+                            scaled_action,
+                            np.array(config["legs_motor_pos_lower_limit_list"]),
+                            np.array(config["legs_motor_pos_upper_limit_list"]))
+
+    return config["default_lower_angles"] + clipped_action
+
+
 def compute_observation(d, config, action, cmd, height_cmd, n_joints, qj=None, dqj=None):
     """Same as mujoco_deploy_h12: single obs 76 dim."""
     if qj is None:
@@ -90,13 +90,13 @@ def compute_observation(d, config, action, cmd, height_cmd, n_joints, qj=None, d
     quat = d.qpos[3:7].copy()
     omega = d.qvel[3:6].copy()
 
-    if len(config["default_angles"]) < n_joints:
+    if len(config["default_lower_angles"]) < n_joints:
         padded_defaults = np.zeros(n_joints, dtype=np.float32)
-        padded_defaults[: len(config["default_angles"])] = config["default_angles"]
-        if "default_angles_arms" in config and n_joints >= len(config["default_angles"]) + len(config["default_angles_arms"]):
-            padded_defaults[len(config["default_angles"]) : len(config["default_angles"]) + len(config["default_angles_arms"])] = config["default_angles_arms"]
+        padded_defaults[: len(config["default_lower_angles"])] = config["default_lower_angles"]
+        if "default_upper_angles" in config and n_joints >= len(config["default_lower_angles"]) + len(config["default_upper_angles"]):
+            padded_defaults[len(config["default_lower_angles"]) : len(config["default_lower_angles"]) + len(config["default_upper_angles"])] = config["default_upper_angles"]
     else:
-        padded_defaults = config["default_angles"][:n_joints]
+        padded_defaults = config["default_lower_angles"][:n_joints]
 
     qj_scaled = (qj - padded_defaults) * config["dof_pos_scale"]
     dqj_scaled = dqj * config["dof_vel_scale"]
@@ -115,6 +115,21 @@ def compute_observation(d, config, action, cmd, height_cmd, n_joints, qj=None, d
     return single_obs, single_obs_dim
 
 
+def clip_hand_force_to_trained(force_xyz, max_mag=HAND_FORCE_MAG_MAX):
+    """Clip a 3D hand force to the encoder's trained magnitude (direction preserved).
+
+    Keeps the encoder input inside the distribution it was trained on
+    (magnitude U(0, max_mag)); pass ``max_mag=None`` to disable.
+    """
+    f = np.asarray(force_xyz, dtype=np.float32)
+    if max_mag is None or max_mag <= 0:
+        return f
+    n = float(np.linalg.norm(f))
+    if n > max_mag:
+        f = f * (np.float32(max_mag) / np.float32(n))
+    return f
+
+
 def build_et_mujoco(
     qpos,
     left_hand_force_xyz,
@@ -122,19 +137,27 @@ def build_et_mujoco(
     num_actions=12,
     policy_joints=H12_POLICY_JOINTS,
     qj_policy=None,
+    clip_force_mag=HAND_FORCE_MAG_MAX,
 ):
-    """e_t = 15 upper-body dof + left_xyz(3) + right_xyz(3) = 21 (hand-only, same order as Isaac build_et_from_gym)."""
+    """e_t = 15 upper-body dof + left_xyz(3) + right_xyz(3) = 21 (hand-only, same order as Isaac build_et_from_gym).
+
+    The hand-force entries are clipped to ``clip_force_mag`` (per hand, direction preserved)
+    so out-of-distribution loads do not feed the encoder unseen forces. ``clip_force_mag=None``
+    disables clipping (raw privileged force).
+    """
     if qj_policy is None:
         upper = qpos[7 + num_actions : 7 + policy_joints].copy()
     else:
         upper = qj_policy[num_actions:policy_joints].copy()
-    return np.concatenate([upper, np.asarray(left_hand_force_xyz, dtype=np.float32), np.asarray(right_hand_force_xyz, dtype=np.float32)], dtype=np.float32)
+    left = clip_hand_force_to_trained(left_hand_force_xyz, clip_force_mag)
+    right = clip_hand_force_to_trained(right_hand_force_xyz, clip_force_mag)
+    return np.concatenate([upper, left, right], dtype=np.float32)
 
 
 def main():
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default=os.path.join(_SCRIPT_DIR, "h1_2_rma_arm.yaml"))
+    parser.add_argument("--config", type=str, default=os.path.join(_SCRIPT_DIR, "h12_fame_debug.yaml"))
     parser.add_argument(
         "--no_encode",
         action="store_true",
@@ -146,12 +169,6 @@ def main():
     no_encode = args.no_encode or config.get("no_encode", False)
     if no_encode:
         print("no_encode=True: forces applied to robot, but e_t uses zeros for encoder (naive policy test).")
-
-    # Resolve relative paths relative to config file directory
-    config_dir = os.path.dirname(os.path.abspath(args.config))
-    for key in ["policy_path", "xml_path", "encoder_path"]:
-        if key in config and config[key] and isinstance(config[key], str) and not os.path.isabs(config[key]):
-            config[key] = os.path.normpath(os.path.join(config_dir, config[key]))
 
     m = mujoco.MjModel.from_xml_path(config["xml_path"])
     d = mujoco.MjData(m)
@@ -205,7 +222,7 @@ def main():
         print("No encoder_path or file not found; z_t will be zeros.")
 
     action = np.zeros(config["num_actions"], dtype=np.float32)
-    target_dof_pos = config["default_angles"].copy()
+    target_dof_pos = config["default_lower_angles"].copy()
     cmd = config["cmd_init"].copy()
     height_cmd = config["height_cmd"]
 
@@ -259,9 +276,9 @@ def main():
 
             upper_h12_count = h12_ctrl_count - config["num_actions"]
             if upper_h12_count > 0:
-                kps_arm = config.get("kps_arms", np.ones(upper_h12_count, dtype=np.float32) * 500.0)
+                kps_arm = config.get("kps_arms", np.ones(upper_h12_count, dtype=np.float32) * 100.0)
                 kds_arm = config.get("kds_arms", np.ones(upper_h12_count, dtype=np.float32) * 5.0)
-                arm_target_positions = config.get("default_angles_arms", np.zeros(upper_h12_count, dtype=np.float32))
+                arm_target_positions = config.get("default_upper_angles", np.zeros(upper_h12_count, dtype=np.float32))
                 if len(arm_target_positions) < upper_h12_count:
                     arm_target_positions = np.zeros(upper_h12_count, dtype=np.float32)
                 arm_tau = pd_control(
@@ -338,7 +355,7 @@ def main():
                 if counter % (config["control_decimation"] * 50) == 0:
                     print(f"z_t: {z_t}")
 
-                target_dof_pos = action * config["action_scale"] + config["default_angles"]
+                target_dof_pos = clip_policy_action(action, config)
 
             viewer.sync()
             time_until_next_step = m.opt.timestep - (time.time() - step_start)

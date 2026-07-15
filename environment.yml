@@ -9,6 +9,7 @@ dependencies:
   - scipy
   - pynput
   - pandas
+  - pyyaml
   - openssl
   - matplotlib
   # torch
@@ -20,6 +21,7 @@ dependencies:
   - open3d
   - pyvista
   - pyquaternion
+  - opencv
   # sims
   - mujoco
   - pygame
@@ -30,4 +32,6 @@ dependencies:
   - pip
   - pip:
     - meshcat
+    - meshcat-shapes
+    - imageio[ffmpeg]
     - pin-pink
