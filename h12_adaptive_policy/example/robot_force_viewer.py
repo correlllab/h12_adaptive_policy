@@ -1,4 +1,5 @@
 import time
+import numpy as np
 import argparse
 
 from unitree_sdk2py.core.channel import ChannelFactoryInitialize
@@ -28,6 +29,21 @@ def main():
         link_name = 'left_wrist_yaw_link'
         wrench = robot_model.get_frame_wrench(link_name)
         print(f'Force at {link_name}: {wrench[0:3]}')
+
+        q = robot_model.state['q']
+        imu_quat = robot_model.state['imu_state'].quaternion
+        tau = robot_model.state['tau']
+        jacobian = robot_model.get_frame_jacobian(link_name, q, imu_quat)
+        tau_grav = robot_model.get_gravity_compensation(q, imu_quat)
+        wrench_manual = np.linalg.pinv(jacobian.T) @ (tau - tau_grav)
+        # print('q')
+        # print(q)
+        # print('jacobian')
+        # print(jacobian)
+        # print('tau')
+        # print(tau)
+
+        print(f'Diff: {wrench - wrench_manual}')
 
         time.sleep(0.01)
 
