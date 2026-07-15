@@ -104,9 +104,15 @@ def plot_dqpos(t, dqpos_hist, joint_names, save_path):
 ## Main Controller Class
 ######################################################################
 class Controller:
-    def __init__(self, config: Config, use_keyboard: bool = False) -> None:
+    def __init__(
+        self,
+        config: Config,
+        use_keyboard: bool = False,
+        record_logs: bool = False,
+    ) -> None:
         self.config = config
         self.use_keyboard = use_keyboard
+        self.record_logs = record_logs
         if self.use_keyboard:
             self.remote_controller = KeyboardRemoteController()
         else:
@@ -406,14 +412,15 @@ class Controller:
 
 
         # --- DATA LOGGING ADDITIONS ---
-        current_time = time.time() - self.start_time
-        self.t_hist.append(current_time)
-        self.qpos_hist.append(self.qj.copy()) # Full qpos (27 DOFs)
-        self.dq_hist.append(self.dqj.copy()) # Full dq (27 DOFs)
-        self.tau_hist.append(self.tauj.copy()) # Full tau (27 DOFs)
-        self.knee_ankle_tau_hist.append(self.tauj[KNEE_ANKLE_LEG_IDXS].copy())
-        full_target_dof = np.concatenate((target_dof_pos, self.config.arm_waist_target), axis=0)
-        self.target_dof_hist.append(full_target_dof)
+        if self.record_logs:
+            current_time = time.time() - self.start_time
+            self.t_hist.append(current_time)
+            self.qpos_hist.append(self.qj.copy()) # Full qpos (27 DOFs)
+            self.dq_hist.append(self.dqj.copy()) # Full dq (27 DOFs)
+            self.tau_hist.append(self.tauj.copy()) # Full tau (27 DOFs)
+            self.knee_ankle_tau_hist.append(self.tauj[KNEE_ANKLE_LEG_IDXS].copy())
+            full_target_dof = np.concatenate((target_dof_pos, self.config.arm_waist_target), axis=0)
+            self.target_dof_hist.append(full_target_dof)
         # -----------------------------
 
 
@@ -458,23 +465,25 @@ if __name__ == "__main__":
     _SCRIPT_DIR = Path(__file__).resolve().parent
     _ROOT_DIR = _SCRIPT_DIR.parent
     parser = argparse.ArgumentParser(description="Run squat policy on H12 real robot.")
-    parser.add_argument("config", type=str, nargs="?", default="RealDeploy/h1_2_real.yaml",
+    parser.add_argument("--config", type=str, default="RealDeploy/h1_2_real.yaml",
                         help="Config YAML path (root-relative or RealDeploy-relative)")
-    parser.add_argument("--save", type=str, required=True,
+    parser.add_argument("--save", type=str,
                         help="Log subfolder name under data/real (e.g. run_001)")
     parser.add_argument("--keyboard", action="store_true",
                         help="Use keyboard listener instead of wireless remote")
     args = parser.parse_args()
 
-    folder_name = args.save.strip()
-    folder_path = Path(folder_name)
-    if (
-        not folder_name
-        or folder_path.is_absolute()
-        or len(folder_path.parts) != 1
-        or folder_name in {".", ".."}
-    ):
-        sys.exit("Invalid --save. Please provide a single folder name (no path separators).")
+    folder_name = None
+    if args.save is not None:
+        folder_name = args.save.strip()
+        folder_path = Path(folder_name)
+        if (
+            not folder_name
+            or folder_path.is_absolute()
+            or len(folder_path.parts) != 1
+            or folder_name in {".", ".."}
+        ):
+            sys.exit("Invalid --save. Please provide a single folder name (no path separators).")
 
     config_arg = Path(args.config)
     candidate_paths = []
@@ -500,7 +509,11 @@ if __name__ == "__main__":
         print("Keyboard remote simulation enabled.")
         print_keyboard_mapping()
 
-    controller = Controller(config, use_keyboard=args.keyboard)
+    controller = Controller(
+        config,
+        use_keyboard=args.keyboard,
+        record_logs=folder_name is not None,
+    )
 
     if args.keyboard and hasattr(controller.remote_controller, "_backend"):
         print(f"Keyboard backend: {controller.remote_controller._backend}")
@@ -525,6 +538,8 @@ if __name__ == "__main__":
     controller.close()
     print("Exit")
 
+    if folder_name is None:
+        sys.exit()
 
     # ----------------------------------------------------------------------------------
     # --- POST-EXECUTION LOG SAVE ---
