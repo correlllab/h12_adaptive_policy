@@ -46,6 +46,10 @@ num_actions: 12
 policy_path: "data/rma_hand/policy.pt"
 encoder_path: "data/rma_hand/encoder_3999.pt"
 
+network:
+  domain_id: 1
+  interface: ''
+
 kps_legs: [200, 200, 200, 300, 60, 40,
            200, 200, 200, 300, 60, 40]
 
@@ -65,4 +69,3 @@ height_cmd: 1.00
 left_hand_force: [0.0, 0.0, 0.0]
 right_hand_force: [0.0, 0.0, 0.0]
 no_encode: true
-

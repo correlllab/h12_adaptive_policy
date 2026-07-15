@@ -1,6 +1,50 @@
-import yaml
-import numpy as np
+import os
 from pathlib import Path
+from typing import Any
+
+import numpy as np
+import yaml
+from unitree_sdk2py.core.channel import ChannelFactoryInitialize
+
+
+def _channel_factory_settings(config: dict[str, Any]) -> tuple[int, str | None]:
+    '''Get DDS channel factory settings from environment and config'''
+    env_domain = os.environ.get('ROS_DOMAIN_ID')
+    network = config['network']
+    domain_id = (
+        int(env_domain)
+        if env_domain is not None
+        else int(network['domain_id'])
+    )
+    return domain_id, network['interface']
+
+
+def init_channel_factory(config: dict[str, Any]) -> None:
+    '''Initialize the DDS channel factory from environment and config'''
+    domain_id, interface = _channel_factory_settings(config)
+    if interface:
+        ChannelFactoryInitialize(domain_id, interface)
+    else:
+        ChannelFactoryInitialize(domain_id)
+
+
+def init_channel_factory_guard(config: dict[str, Any]) -> None:
+    '''Confirm before initializing the real robot DDS domain'''
+    domain_id, _ = _channel_factory_settings(config)
+    if domain_id == 0:
+        try:
+            confirmation = input(
+                'WARNING: ROS_DOMAIN_ID=0 -> DDS domain 0 is the REAL ROBOT '
+                'command bus.\n'
+                '         Nodes will publish/subscribe on the live robot.\n'
+                'Proceed on DDS domain 0 (real robot)? [y/N] '
+            )
+        except EOFError:
+            confirmation = ''
+        if confirmation.strip().lower() != 'y':
+            raise SystemExit('DDS channel factory initialization cancelled')
+    init_channel_factory(config)
+
 
 class Config:
     def __init__(self, file_path) -> None:
@@ -8,6 +52,7 @@ class Config:
 
         with open(file_path, "r") as f:
             config = yaml.load(f, Loader=yaml.FullLoader)
+            self.data = config
 
             self.control_dt = config["control_dt"]
 

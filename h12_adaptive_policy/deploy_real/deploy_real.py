@@ -18,8 +18,7 @@ import torch
 import collections
 
 
-from unitree_sdk2py.core.channel import ChannelPublisher, ChannelFactoryInitialize
-from unitree_sdk2py.core.channel import ChannelSubscriber, ChannelFactoryInitialize
+from unitree_sdk2py.core.channel import ChannelPublisher, ChannelSubscriber
 from unitree_sdk2py.idl.default import unitree_hg_msg_dds__LowCmd_, unitree_hg_msg_dds__LowState_
 from unitree_sdk2py.idl.default import unitree_go_msg_dds__LowCmd_, unitree_go_msg_dds__LowState_
 from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_ as LowCmdHG
@@ -32,7 +31,7 @@ from common.command_helper import create_damping_cmd, create_zero_cmd, init_cmd_
 from common.rotation_helper import get_gravity_orientation, transform_imu_data
 from common.remote_controller import RemoteController, KeyMap
 from common.keyboard_controller import KeyboardRemoteController, print_keyboard_mapping
-from config import Config
+from config import Config, init_channel_factory_guard
 
 # RMA imports (encoder) – same as in MujocoDeploy
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -459,7 +458,6 @@ if __name__ == "__main__":
     _SCRIPT_DIR = Path(__file__).resolve().parent
     _ROOT_DIR = _SCRIPT_DIR.parent
     parser = argparse.ArgumentParser(description="Run squat policy on H12 real robot.")
-    parser.add_argument("net", type=str, help="Network interface for DDS")
     parser.add_argument("config", type=str, nargs="?", default="RealDeploy/h1_2_real.yaml",
                         help="Config YAML path (root-relative or RealDeploy-relative)")
     parser.add_argument("--save", type=str, required=True,
@@ -495,8 +493,8 @@ if __name__ == "__main__":
     print("Config:", config.action_scale, config.cmd_scale, config.dof_pos_scale, config.dof_vel_scale, config.ang_vel_scale)
     print("Policy:", config.policy_path)
 
-    # Initialize DDS communication
-    ChannelFactoryInitialize(0, args.net)
+    # Initialize DDS communication after confirming real-robot domain access.
+    init_channel_factory_guard(config.data)
 
     if args.keyboard:
         print("Keyboard remote simulation enabled.")

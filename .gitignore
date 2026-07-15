@@ -24,3 +24,6 @@ Makefile
 *.DS_Store
 *.egg-info/
 *.launch.pyc
+
+# Agent
+.kilo
