@@ -43,6 +43,9 @@ required-environments = [
     "sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
 
+[tool.setuptools.packages.find]
+include = ["h12_adaptive_policy*"]
+
 [tool.uv.sources]
 h12_ros2_controller = { path = "submodules/h12_ros2_controller", editable = true }
 # Editable install of the Unitree Python SDK. Non-editable (wheel) installs
