@@ -447,7 +447,7 @@ def run_manip_dds(state, publisher, cmd_msg, crc_obj, config, rm, policy, encode
     R0 = None
     task_start_step = 0
     print(
-        "[ctrl] Lower body balancing engaged. Press ENTER to preposition the active arm "
+        "[ctrl] Lower body balancing engaged. Press ENTER to preposition the moving arm "
         "to the selected task's first waypoint.",
         flush=True,
     )

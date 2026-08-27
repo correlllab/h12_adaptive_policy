@@ -32,7 +32,7 @@ def _pick_solver():
 def _seed_reduced_model(model_body, side, torso, left_arm, right_arm):
     """Build a Pinocchio reduced model with only the manip arm free.
 
-    All other joints (passive arm, torso, legs) are locked at explicit nominal
+    All other joints (counter arm, torso, legs) are locked at explicit nominal
     values, so IK only solves the 7 manip-arm joints.
     """
     qn = pin.neutral(model_body)

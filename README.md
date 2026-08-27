@@ -109,10 +109,10 @@ python h12_adaptive_policy/deploy/manip_ik_demo_dds.py --manip single_arm_manip.
 DDS startup is staged for safety and reproducibility:
 - On launch, the robot moves to the nominal joint pose from `--config`: `default_lower_angles` plus `default_upper_angles`.
 - First `ENTER` starts lower-body balancing while the upper body holds the config nominal pose.
-- Second `ENTER` captures the balanced pelvis pose as the world-frame anchor, then smoothly moves the active wrist to the first waypoint from `--manip` / `--task` over `startup.preposition_duration_s` seconds. The active arm command is blended from the measured joint pose, and if the task YAML defines `arm_down`, the passive/free arm moves to that 7-joint target over the same window.
+- Second `ENTER` captures the balanced pelvis pose as the world-frame anchor, then smoothly moves the active wrist to the first waypoint from `--manip` / `--task` over `startup.preposition_duration_s` seconds. The moving arm command is blended from the measured joint pose, and if the task YAML defines `arm_down`, the counter arm moves to that 7-joint target over the same window.
 - `S` blends from the preposition command into trajectory tracking over `startup.trajectory_start_blend_s` seconds. Trajectory time, tracking-error computation, logging, and force recording start after that blend window.
 
-For `single_arm_manip.yaml`, `--task right_hand_manip` makes the right arm active and moves the left arm to top-level `arm_down`; `--task left_hand_manip` does the opposite. The active arm start target is `waypoints[0].xyz` in the selected task.
+For `single_arm_manip.yaml`, `--task right_hand_manip` makes the right arm the moving arm and moves the left counter arm to top-level `arm_down`; `--task left_hand_manip` swaps those roles. The moving-arm start target is `waypoints[0].xyz` in the selected task.
 
 After the task summary, the controller keeps the FAME leg policy running indefinitely; Ctrl-C exits with soft damping.
 
