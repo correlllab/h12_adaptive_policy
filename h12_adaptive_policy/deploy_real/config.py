@@ -85,6 +85,13 @@ class Config:
             self.kps = config.get("kps") or config["kps_legs"]
             self.kds = config.get("kds") or config["kds_legs"]
             self.default_angles = np.array(config.get("default_angles") or config["default_angles_legs"], dtype=np.float32)
+            # Startup ramp target: the stance the policy actually holds while standing.
+            # Kept separate from default_angles, which is the policy's trained offset
+            # for both the observation and the action, and must not be retuned.
+            self.start_angles = np.array(
+                config.get("start_angles_legs") or config.get("default_angles") or config["default_angles_legs"],
+                dtype=np.float32,
+            )
 
             self.arm_waist_joint2motor_idx = config["arm_waist_joint2motor_idx"]
             self.arm_waist_kps = config["arm_waist_kps"]

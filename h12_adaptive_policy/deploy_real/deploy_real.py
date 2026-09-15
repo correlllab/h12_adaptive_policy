@@ -218,14 +218,14 @@ class Controller:
             time.sleep(self.config.control_dt)
 
     def move_to_default_pos(self):
-        print("▶️ Moving to default position...")
+        print("▶️ Moving to start position...")
         total_time = 2
         num_step = int(total_time / self.config.control_dt)
 
         dof_idx = self.config.leg_joint2motor_idx + self.config.arm_waist_joint2motor_idx
         kps = self.config.kps + self.config.arm_waist_kps
         kds = self.config.kds + self.config.arm_waist_kds
-        default_pos = np.concatenate((self.config.default_angles, self.config.arm_waist_target), axis=0)
+        start_pos = np.concatenate((self.config.start_angles, self.config.arm_waist_target), axis=0)
         dof_size = len(dof_idx)
 
         # record the current pos
@@ -238,7 +238,7 @@ class Controller:
             alpha = i / num_step
             for j in range(dof_size):
                 motor_idx = dof_idx[j]
-                target_pos = default_pos[j]
+                target_pos = start_pos[j]
                 self.low_cmd.motor_cmd[motor_idx].q = init_dof_pos[j] * (1 - alpha) + target_pos * alpha
                 self.low_cmd.motor_cmd[motor_idx].qd = 0
                 self.low_cmd.motor_cmd[motor_idx].kp = kps[j]
@@ -246,14 +246,14 @@ class Controller:
                 self.low_cmd.motor_cmd[motor_idx].tau = 0
             self.send_cmd(self.low_cmd)
             time.sleep(self.config.control_dt)
-        print("✅ Reached default position.")
+        print("✅ Reached start position.")
 
     def default_pos_state(self):
-        print("▶️ Holding default position. Press 'A' on controller to start RL policy...")
+        print("▶️ Holding start position. Press 'A' on controller to start RL policy...")
         while self.remote_controller.button[KeyMap.A] != 1:
             for i in range(len(self.config.leg_joint2motor_idx)):
                 motor_idx = self.config.leg_joint2motor_idx[i]
-                self.low_cmd.motor_cmd[motor_idx].q = self.config.default_angles[i]
+                self.low_cmd.motor_cmd[motor_idx].q = self.config.start_angles[i]
                 self.low_cmd.motor_cmd[motor_idx].qd = 0
                 self.low_cmd.motor_cmd[motor_idx].kp = self.config.kps[i]
                 self.low_cmd.motor_cmd[motor_idx].kd = self.config.kds[i]
