@@ -233,13 +233,16 @@ class Controller:
         for i in range(dof_size):
             init_dof_pos[i] = self.low_state.motor_state[dof_idx[i]].q
 
-        # move to default pos
+        # move to start pos
+        num_legs = len(self.config.leg_joint2motor_idx)
         for i in range(num_step):
             alpha = i / num_step
+            ramp_pos = init_dof_pos * (1 - alpha) + start_pos * alpha
+            # init_dof_pos is the measured pose, which can sit outside the envelope
+            ramp_pos[:num_legs] = self.config.clip_legs(ramp_pos[:num_legs])
             for j in range(dof_size):
                 motor_idx = dof_idx[j]
-                target_pos = start_pos[j]
-                self.low_cmd.motor_cmd[motor_idx].q = init_dof_pos[j] * (1 - alpha) + target_pos * alpha
+                self.low_cmd.motor_cmd[motor_idx].q = ramp_pos[j]
                 self.low_cmd.motor_cmd[motor_idx].qd = 0
                 self.low_cmd.motor_cmd[motor_idx].kp = kps[j]
                 self.low_cmd.motor_cmd[motor_idx].kd = kds[j]
@@ -405,10 +408,7 @@ class Controller:
         # Clip the absolute target, not the offset: legs_motor_pos_*_limit_list are
         # absolute joint ranges, so bounding scaled_action let the target overshoot
         # them by default_angles on every joint with a nonzero default.
-        target_dof_pos = np.clip(
-                            self.config.default_angles + scaled_action,
-                            np.array(self.config.legs_motor_pos_lower_limit_list),
-                            np.array(self.config.legs_motor_pos_upper_limit_list))
+        target_dof_pos = self.config.clip_legs(self.config.default_angles + scaled_action)
 
 
 

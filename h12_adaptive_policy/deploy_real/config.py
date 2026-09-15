@@ -119,3 +119,14 @@ class Config:
 
             self.legs_motor_pos_lower_limit_list = config["legs_motor_pos_lower_limit_list"]
             self.legs_motor_pos_upper_limit_list = config["legs_motor_pos_upper_limit_list"]
+            # Prebuilt once; clip_legs() runs on every control tick.
+            self.legs_pos_lower = np.array(self.legs_motor_pos_lower_limit_list, dtype=np.float32)
+            self.legs_pos_upper = np.array(self.legs_motor_pos_upper_limit_list, dtype=np.float32)
+
+            # start_angles is measured under load, so it can sit just outside the
+            # configured envelope; clip it so no phase ever commands past a limit.
+            self.start_angles = self.clip_legs(self.start_angles)
+
+    def clip_legs(self, q_legs):
+        """Clip leg position commands to the configured motor position limits"""
+        return np.clip(q_legs, self.legs_pos_lower, self.legs_pos_upper)

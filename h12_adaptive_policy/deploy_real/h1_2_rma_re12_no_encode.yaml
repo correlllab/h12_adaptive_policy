@@ -61,12 +61,15 @@ default_angles_legs: [0.0, -0.16, 0.0, 0.36, -0.2, 0.0,
                       0.0, -0.16, 0.0, 0.36, -0.2, 0.0]
 
 # Startup ramp target only (move_to_default_pos / default_pos_state).
-# Measured as the mean commanded lower-body pose while the policy holds a stand
-# (rt/lowcmd, 20 s, height_cmd 1.00, zero velocity command), so the handoff into
-# the policy is nearly bumpless. Note hip_yaw sits on the -0.37 clip limit.
+# Measured from rt/lowstate -- the LOADED joint positions while the policy holds a
+# stand (20 s mean, height_cmd 1.00, zero velocity command) -- not the commanded
+# pose. Under load the legs splay ~0.11 rad wider at the hips and the knees carry
+# ~0.06 rad more flexion than the command, so ramping to the commanded pose left
+# the knees over-extended and the stance too narrow.
+# L_hip_yaw clipped from its measured -0.3735 to the -0.37 envelope.
 # This does NOT replace default_angles_legs, which is the policy's trained offset.
-start_angles_legs: [-0.37, -0.1928, 0.0663, 0.2726, -0.1432, -0.1466,
-                    -0.37, -0.1297, -0.0632, 0.3124, -0.1014, 0.1119]
+start_angles_legs: [-0.3700, -0.2036, 0.1770, 0.3276, -0.1077, -0.1792,
+                    -0.3676, -0.1076, -0.1677, 0.3708, -0.2489, 0.1589]
 
 num_obs: 252    # 76*3 proprio history + 24 (3-step z_t)
 obs_history_len: 3
