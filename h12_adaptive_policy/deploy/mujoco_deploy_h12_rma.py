@@ -66,15 +66,16 @@ def get_gravity_orientation(quat):
 
 
 def clip_policy_action(action, config):
-    """Apply the same YAML-driven leg action clipping used by deploy_real."""
+    """Apply the same YAML-driven leg position limits used by deploy_real."""
     scaled_action = action * config["action_scale"]
 
-    clipped_action = np.clip(
-                            scaled_action,
+    # Clip the absolute target, not the offset: legs_motor_pos_*_limit_list are
+    # absolute joint ranges, so bounding scaled_action let the target overshoot
+    # them by default_lower_angles on every joint with a nonzero default.
+    return np.clip(
+                            config["default_lower_angles"] + scaled_action,
                             np.array(config["legs_motor_pos_lower_limit_list"]),
                             np.array(config["legs_motor_pos_upper_limit_list"]))
-
-    return config["default_lower_angles"] + clipped_action
 
 
 def compute_observation(d, config, action, cmd, height_cmd, n_joints, qj=None, dqj=None):

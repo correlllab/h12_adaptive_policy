@@ -402,12 +402,13 @@ class Controller:
 
         scaled_action = self.action * self.config.action_scale
 
-        clipped_action = np.clip(
-                            scaled_action,
+        # Clip the absolute target, not the offset: legs_motor_pos_*_limit_list are
+        # absolute joint ranges, so bounding scaled_action let the target overshoot
+        # them by default_angles on every joint with a nonzero default.
+        target_dof_pos = np.clip(
+                            self.config.default_angles + scaled_action,
                             np.array(self.config.legs_motor_pos_lower_limit_list),
                             np.array(self.config.legs_motor_pos_upper_limit_list))
-
-        target_dof_pos = self.config.default_angles + clipped_action
 
 
 
