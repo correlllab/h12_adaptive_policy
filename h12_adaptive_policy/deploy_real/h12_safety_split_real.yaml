@@ -54,7 +54,7 @@ encoder_path: "h12_adaptive_policy/fame_policy/encoder_3600.pt"
 
 network:
   domain_id: 0
-  interface: 'enx00e04c681314'
+  interface: 'eno1'
 
 # kps_legs: [200, 200, 200, 300, 60, 40,
 #            200, 200, 200, 300, 60, 40]
