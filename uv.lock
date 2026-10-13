@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = "==3.10.*"
 resolution-markers = [
     "platform_machine != 'x86_64' or sys_platform != 'linux'",
@@ -8,8 +8,6 @@ resolution-markers = [
 required-markers = [
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
 ]
-
-[manifest]
 
 [[manifest.dependency-metadata]]
 name = "h12-ros2-controller"
